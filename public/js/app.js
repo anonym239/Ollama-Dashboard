@@ -641,7 +641,9 @@ function renderMessages() {
     return;
   }
   const lastAi = [...chat.messages].reverse().find((m) => m.role === 'assistant');
+  const scrolls = saveCodeScroll(el.inner);
   el.inner.innerHTML = chat.messages.map((m, i) => messageHtml(m, i, chat, m === lastAi)).join('');
+  restoreCodeScroll(el.inner, scrolls);
 }
 
 function welcomeHtml() {
@@ -798,7 +800,9 @@ function updateMessageEl(m) {
   if (!html) { node.remove(); return; }
   // Offenen Gedankengang beim Aktualisieren erhalten
   const wasOpen = node.querySelector('details.thinking')?.open;
+  const scrolls = saveCodeScroll(node.parentNode);
   node.outerHTML = html;
+  restoreCodeScroll(el.inner, scrolls);
   if (wasOpen != null) {
     const d = document.querySelector(`#m-${m.id} details.thinking`);
     if (d) d.open = wasOpen;
@@ -812,7 +816,6 @@ function scheduleStreamRender(m) {
   rafPending = true;
   requestAnimationFrame(() => {
     rafPending = false;
-    const nearBottom = isNearBottom();
     const node = document.getElementById(`m-${m.id}`);
     if (!node) { if (currentChat()?.messages.includes(m)) renderMessages(); return; }
     if (busy?.msgId !== m.id) { updateMessageEl(m); return; } // Streaming schon beendet
@@ -827,17 +830,89 @@ function scheduleStreamRender(m) {
       det.querySelector('summary').innerHTML = text ? 'Gedankengang anzeigen' : '<span class="ti-label">Denkt nach</span>';
       if (text && det.dataset.auto !== 'done') { det.open = false; det.dataset.auto = 'done'; }
     }
-    node.querySelector('.md').innerHTML = bodyHtml(text, true, m);
-    if (nearBottom) scrollToBottom();
+    // Nur Geändertes aktualisieren – so bleiben Scroll-Positionen (z. B. im Code-Fenster) erhalten
+    patchChildren(node.querySelector('.md'), bodyHtml(text, true, m));
+    scrollToBottom();
   });
 }
 
-function isNearBottom() {
-  const s = el.messages;
-  return s.scrollHeight - s.scrollTop - s.clientHeight < 140;
+function patchChildren(parent, html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const next = [...tpl.content.childNodes];
+  const cur = [...parent.childNodes];
+  next.forEach((n, i) => {
+    const c = cur[i];
+    if (!c) { parent.appendChild(n); return; }
+    if (c.isEqualNode(n)) return;
+    if (c.nodeType === 1 && n.nodeType === 1 && c.classList.contains('code-block') && n.classList.contains('code-block')) {
+      updateCodeBlock(c, n);
+      return;
+    }
+    parent.replaceChild(n, c);
+  });
+  for (let i = next.length; i < cur.length; i++) cur[i].remove();
 }
+
+// Code-Block an Ort und Stelle weiterschreiben: unten -> mitlaufen, sonst Position halten
+function updateCodeBlock(c, n) {
+  c.className = n.className;
+  for (const a of ['data-path', 'data-lang']) {
+    if (n.hasAttribute(a)) c.setAttribute(a, n.getAttribute(a)); else c.removeAttribute(a);
+  }
+  const ch = c.querySelector('.code-head > span');
+  const nh = n.querySelector('.code-head > span');
+  if (ch && nh && ch.innerHTML !== nh.innerHTML) ch.innerHTML = nh.innerHTML;
+  const pre = c.querySelector('pre');
+  const code = c.querySelector('code');
+  const text = n.querySelector('code').textContent;
+  if (!pre || !code) { c.replaceWith(n); return; }
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+  const left = pre.scrollLeft;
+  if (code.textContent !== text) code.textContent = text;
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+  pre.scrollLeft = left;
+}
+
+// Scroll-Positionen der Code-Fenster über ein Neuzeichnen hinweg merken
+function saveCodeScroll(root) {
+  const map = new Map();
+  root.querySelectorAll('[data-id]').forEach((msgEl) => {
+    msgEl.querySelectorAll('.code-block pre').forEach((pre, i) => {
+      if (pre.scrollTop || pre.scrollLeft) map.set(`${msgEl.dataset.id}:${i}`, [pre.scrollTop, pre.scrollLeft]);
+    });
+  });
+  return map;
+}
+function restoreCodeScroll(root, map) {
+  if (!map.size) return;
+  root.querySelectorAll('[data-id]').forEach((msgEl) => {
+    msgEl.querySelectorAll('.code-block pre').forEach((pre, i) => {
+      const v = map.get(`${msgEl.dataset.id}:${i}`);
+      if (v) { pre.scrollTop = v[0]; pre.scrollLeft = v[1]; }
+    });
+  });
+}
+
+// Mitlaufen beim Schreiben: hört auf, sobald du hochscrollst, und geht unten wieder weiter
+let followStream = true;
+let lastScrollTop = 0;
+el.messages.addEventListener('scroll', () => {
+  const sc = el.messages;
+  const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40;
+  if (atBottom) followStream = true;
+  else if (sc.scrollTop < lastScrollTop - 2) followStream = false;
+  lastScrollTop = sc.scrollTop;
+}, { passive: true });
+el.messages.addEventListener('wheel', (e) => { if (e.deltaY < 0) followStream = false; }, { passive: true });
+el.messages.addEventListener('touchmove', () => { followStream = false; }, { passive: true });
+el.messages.addEventListener('keydown', (e) => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) followStream = false; });
+
 function scrollToBottom(force = false) {
-  if (force || isNearBottom()) el.messages.scrollTop = el.messages.scrollHeight;
+  if (force) followStream = true;
+  if (!followStream) return;
+  el.messages.scrollTop = el.messages.scrollHeight;
+  lastScrollTop = el.messages.scrollTop;
 }
 
 // Klicks in Nachrichten
@@ -1182,7 +1257,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const msg = { id: uid(), role: 'assistant', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now() };
   chat.messages.push(msg);
   busy.msgId = msg.id;
-  if (currentChatId === chat.id) { renderMessages(); scrollToBottom(true); }
+  if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
 
   const body = { model, messages, keep_alive: '30m', options: { temperature: Number(assistant.temperature ?? 0.7) } };
   if (Number(assistant.numCtx) > 0) body.options.num_ctx = Number(assistant.numCtx);
@@ -1298,7 +1373,7 @@ async function runAction(chat, act, signal) {
       const st = await localFs.stat(t.args.path).catch(() => null);
       t.exists = st?.exists;
     }
-    if (currentChatId === chat.id) { renderMessages(); scrollToBottom(true); }
+    if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
     const ok = await new Promise((resolve) => {
       approvals.set(t.id, resolve);
       signal.addEventListener('abort', () => resolve(false), { once: true });
@@ -1312,7 +1387,7 @@ async function runAction(chat, act, signal) {
     }
     t.status = 'running';
   }
-  if (currentChatId === chat.id) { renderMessages(); scrollToBottom(true); }
+  if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
 
   try {
     let lastShow = 0;

@@ -13,6 +13,10 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.2.1
+
+- **Scrollen beim Schreiben**: Während die KI Code schreibt, kannst du im Code-Fenster und im Chat frei scrollen, ohne dass es zurückspringt. Bist du ganz unten, läuft die Anzeige automatisch mit, wie in einem Terminal.
+
 ### Neu in 1.2
 
 - **Viel bessere Websuche**: Unpassende Treffer (z. B. Nachrichtenseiten bei Technikfragen) werden aussortiert, offizielle Seiten bevorzugt und mehrere Suchmaschinen kombiniert. Die KI liest auf bis zu 4 Seiten **genau die Textstellen, die zur Frage passen**, nicht mehr nur den Seitenanfang.
