@@ -89,11 +89,10 @@ npm run build          # erzeugt dist/app/OllamaDashboard(.exe) – eigenständi
 iscc /DMyAppVersion=1.0.0 installer/setup.iss   # Windows-Installer (Inno Setup 6)
 ```
 
-Ein neues Release entsteht automatisch per GitHub Actions, sobald ein Tag gepusht wird:
+Releases entstehen automatisch per GitHub Actions (Windows-Installer, portable ZIP und Prüfsummen):
 
-```bash
-git tag v1.0.1 && git push origin v1.0.1
-```
+- **Version in `package.json` erhöhen und pushen**: Dann wird ein Release `vX.Y.Z` gebaut, sofern es noch nicht existiert, oder
+- einen Tag pushen: `git tag v1.0.1 && git push origin v1.0.1`
 
 ## Lizenz
 

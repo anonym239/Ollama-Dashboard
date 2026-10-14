@@ -1,9 +1,14 @@
 name: Release
 
 # Baut den Windows-Installer (.exe) und veröffentlicht ihn als GitHub-Release.
-# Auslösen: Tag pushen, z. B.  git tag v1.0.0 && git push origin v1.0.0
+# Auslöser:
+#  - Push auf einen Branch: Release für die Version aus package.json – nur wenn es sie noch nicht gibt.
+#    (Neues Release = Version in package.json erhöhen und pushen.)
+#  - Tag pushen, z. B.  git tag v1.0.1 && git push origin v1.0.1
+#  - Manuell über "Run workflow"
 on:
   push:
+    branches: ['main', 'master', 'claude/**']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -28,15 +33,26 @@ jobs:
       - name: Version bestimmen
         id: v
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then V="${{ github.event.inputs.version }}"; else V="${GITHUB_REF_NAME#v}"; fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then V="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then V="${GITHUB_REF_NAME#v}"
+          else V=$(node -p "require('./package.json').version"); fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           node -e "const f='package.json';const p=require('./'+f);p.version='$V';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          # Bei Branch-Pushes nur bauen, wenn es dieses Release noch nicht gibt
+          if [ "${{ github.ref_type }}" = "branch" ] && [ "${{ github.event_name }}" = "push" ] && gh release view "v$V" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$V existiert bereits – übersprungen. Für ein neues Release die Version in package.json erhöhen."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Programm bauen (eigenständige .exe)
+        if: steps.v.outputs.skip != 'true'
         run: npm run build
 
       - name: Schnelltest der .exe
+        if: steps.v.outputs.skip != 'true'
         shell: pwsh
         run: |
           $env:NO_OPEN = "1"; $env:PORT = "3999"
@@ -48,6 +64,7 @@ jobs:
           Write-Host "OK – Dashboard startet."
 
       - name: Inno Setup bereitstellen
+        if: steps.v.outputs.skip != 'true'
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -56,20 +73,24 @@ jobs:
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Installer bauen
+        if: steps.v.outputs.skip != 'true'
         shell: pwsh
         run: '& $env:ISCC "/DMyAppVersion=${{ steps.v.outputs.version }}" installer\setup.iss'
 
       - name: Portable ZIP erstellen
+        if: steps.v.outputs.skip != 'true'
         shell: pwsh
         run: Compress-Archive -Path dist\app\* -DestinationPath "dist\OllamaDashboard-Portable-${{ steps.v.outputs.version }}-win-x64.zip"
 
       - name: Prüfsummen
+        if: steps.v.outputs.skip != 'true'
         shell: pwsh
         run: |
           Get-ChildItem dist\*.exe, dist\*.zip | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } | Out-File dist\SHA256SUMS.txt -Encoding ascii
           Get-Content dist\SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
+        if: steps.v.outputs.skip != 'true'
         with:
           name: windows-build
           path: |
@@ -78,9 +99,11 @@ jobs:
             dist/SHA256SUMS.txt
 
       - name: GitHub-Release veröffentlichen
+        if: steps.v.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
           name: Ollama Dashboard v${{ steps.v.outputs.version }}
           body_path: RELEASE_NOTES.md
           files: |
