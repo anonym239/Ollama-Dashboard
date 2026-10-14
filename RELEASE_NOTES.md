@@ -13,6 +13,15 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.1
+
+- **Sichtbares KI-Terminal**: Die KI öffnet ein echtes CMD-Fenster, platziert es auf deinem Bildschirm, tippt Befehle selbst ein und nutzt die echte Ausgabe.
+- **Schlauer bei Windows-Befehlen**: `mkdir -p`, `ls`, `cat`, `Desktop/ordner` und OneDrive-Desktops werden automatisch korrigiert. Ordner und Dateien landen zuverlässig auf dem Desktop.
+- **Keine erfundenen Ergebnisse mehr**: Nach einem Befehl wartet die KI auf das echte Ergebnis.
+- **Keine Endlosschleifen**: Gleiche Aktionen werden in einer Antwort nur einmal ausgeführt.
+- **Eingabefeld** wird nach dem Senden zuverlässig geleert, auch bei Spracheingabe.
+- **Schlichteres Design**: App-Logo statt Emojis, Chatliste wie bei Claude.
+
 ### Highlights
 
 - 💬 Echter KI-Chat mit Streaming, Markdown, Code und Chatverlauf

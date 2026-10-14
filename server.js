@@ -510,6 +510,19 @@ async function webSearch(query, { pages = 3, engine: preferred = 'google', keys 
 function fixWindowsCommand(cmd, desk, home) {
   const q = (p) => (/\s/.test(p) ? `"${p}"` : p);
   let s = String(cmd);
+  // Linux-Befehle, die kleine Modelle gern schreiben, in cmd-Befehle übersetzen
+  const seg = '(^|&&|\\|\\||&|\\|)(\\s*)';
+  const tr = (re, fn) => { s = s.replace(new RegExp(seg + re, 'gi'), (m, a, b, ...rest) => a + b + fn(...rest)); };
+  tr('(mkdir|md)\\s+-p\\s+', (c) => `${c} `);
+  tr('rm\\s+-(?:rf|fr|r)\\s+', () => 'rmdir /s /q ');
+  tr('rm\\s+(?:-f\\s+)?', () => 'del /q ');
+  tr('ls(?:\\s+-[a-z]+)*(?=\\s|$)', () => 'dir');
+  tr('cat\\s+', () => 'type ');
+  tr('cp\\s+(?:-r\\s+)?', () => 'copy ');
+  tr('mv\\s+', () => 'move ');
+  tr('pwd(?=\\s*($|&|\\|))', () => 'cd');
+  tr('clear(?=\\s*($|&|\\|))', () => 'cls');
+  tr('touch\\s+("[^"]+"|\\S+)', (f) => `type nul >> ${f}`);
   // Desktop/... und ~/... in echte Pfade umwandeln
   const bs = (rest) => rest.replace(/\//g, '\\');
   s = s.replace(/(^|[\s"'(=>])(?:Desktop|Schreibtisch)([\\/][^\s"'&|<>]*)/gi, (_, pre, rest) => pre + desk + bs(rest));
@@ -750,7 +763,6 @@ async function handleLocal(req, res) {
       if (!command) return json(res, 400, { error: 'Kein Befehl angegeben' });
       const timeout = Math.min(Math.max(Number(body.timeout) || 120, 1), 1800) * 1000;
       const fixed = await prepareCommand(command);
-      console.log(`  ⚡ Befehl: ${fixed}`);
       const r = await run(fixed, { timeout, cwd: body.cwd || await desktopDir() });
       return json(res, 200, { ...r, code: normalizeCode(fixed, r.code), command: fixed });
     }
@@ -759,7 +771,6 @@ async function handleLocal(req, res) {
       const command = String(body.command || '').trim();
       if (!command) return json(res, 400, { error: 'Kein Befehl angegeben' });
       const timeout = Math.min(Math.max(Number(body.timeout) || 300, 1), 3600) * 1000;
-      console.log(`  ⚡ KI-Terminal: ${command}`);
       const r = await terminalRun(command, { timeout });
       if (r) return json(res, 200, r);
       // Kein sichtbares Terminal möglich (z. B. ohne Bildschirm) -> unsichtbar ausführen
@@ -773,7 +784,6 @@ async function handleLocal(req, res) {
     if (route === '/local/web/search' && req.method === 'POST') {
       const body = await readBody(req);
       if (!String(body.query || '').trim()) return json(res, 400, { error: 'Keine Suchanfrage' });
-      console.log(`  🔎 Websuche: ${body.query}`);
       return json(res, 200, await webSearch(String(body.query).trim(), { pages: body.pages ?? 3, engine: body.engine, keys: body.keys || {} }));
     }
     if (route === '/local/web/fetch' && req.method === 'POST') {
@@ -783,7 +793,6 @@ async function handleLocal(req, res) {
     const fsRoute = route.match(/^\/local\/fs\/(\w+)$/);
     if (fsRoute && req.method === 'POST') {
       const body = await readBody(req, 20_000_000);
-      if (['write', 'mkdir', 'open'].includes(fsRoute[1])) console.log(`  📁 ${fsRoute[1]}: ${body.path}`);
       return json(res, 200, await fsAction(fsRoute[1], body));
     }
     return json(res, 404, { error: 'Unbekannte Aktion' });
@@ -832,7 +841,7 @@ if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';
 server.listen(PORT, HOST, () => {
   const shown = HOST === '0.0.0.0' ? 'localhost' : HOST;
-  console.log('\n  ✨ Ollama Dashboard läuft');
+  console.log('\n  Ollama Dashboard läuft');
   console.log(`  ➜  Öffne:   http://${shown}:${PORT}`);
   console.log(`  ➜  Ollama:  ${DEFAULT_OLLAMA}`);
   console.log('\n  Dieses Fenster offen lassen, solange du das Dashboard nutzt.');

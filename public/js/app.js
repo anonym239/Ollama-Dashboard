@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { local, localFs, web } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS = {
   autoTitle: true,
   think: true,
   agent: true,
+  visibleTerminal: true,
   autoApprove: 'none',
   webSearch: true,
   searchEngine: 'google',
@@ -69,18 +70,18 @@ const DEFAULT_SETTINGS = {
 };
 
 const DEFAULT_ASSISTANTS = [
-  { id: 'default', name: 'Assistent', emoji: '✨', color: '#7c5cff', model: '', systemPrompt: '', temperature: 0.7, numCtx: 8192, agent: true },
+  { id: 'default', name: 'Assistent', color: '#7c5cff', model: '', systemPrompt: '', temperature: 0.7, numCtx: 8192, agent: true },
   {
-    id: 'coder', name: 'Programmierer', emoji: '💻', color: '#0ea5e9', model: '', temperature: 0.3, numCtx: 16384, agent: true,
+    id: 'coder', name: 'Programmierer', color: '#0ea5e9', model: '', temperature: 0.3, numCtx: 16384, agent: true,
     systemPrompt: 'Du bist ein erfahrener Softwareentwickler. Wenn der Nutzer möchte, dass du etwas programmierst, erstellst du ein vollständiges, lauffähiges Projekt in einem neuen Ordner auf dem Desktop und speicherst jede Datei komplett mit einem datei:-Block (keine Platzhalter, kein „Rest bleibt gleich“). Danach erklärst du kurz, wie man es startet.',
   },
 ];
 
 const TEMPLATES = [
-  { name: 'Übersetzer', emoji: '🌍', color: '#10b981', temperature: 0.2, systemPrompt: 'Du bist ein professioneller Übersetzer. Übersetze Texte präzise und natürlich. Wenn keine Zielsprache genannt ist: Deutsch ↔ Englisch.' },
-  { name: 'Lehrer', emoji: '🎓', color: '#f59e0b', temperature: 0.6, systemPrompt: 'Du bist ein geduldiger Lehrer. Erkläre Dinge Schritt für Schritt, mit einfachen Beispielen, und prüfe am Ende mit einer kleinen Frage, ob alles verstanden wurde.' },
-  { name: 'Kreativ-Autor', emoji: '✍️', color: '#ec4899', temperature: 1.0, systemPrompt: 'Du bist ein kreativer Autor. Schreibe lebendig, bildhaft und originell – Geschichten, Gedichte, Slogans und mehr.' },
-  { name: 'Recherche', emoji: '🔎', color: '#6366f1', temperature: 0.3, systemPrompt: 'Du bist ein gründlicher Rechercheur. Suche bei Faktenfragen im Internet, vergleiche Quellen und fasse die Ergebnisse klar strukturiert mit Quellenangaben zusammen.' },
+  { name: 'Übersetzer', color: '#10b981', temperature: 0.2, systemPrompt: 'Du bist ein professioneller Übersetzer. Übersetze Texte präzise und natürlich. Wenn keine Zielsprache genannt ist: Deutsch ↔ Englisch.' },
+  { name: 'Lehrer', color: '#f59e0b', temperature: 0.6, systemPrompt: 'Du bist ein geduldiger Lehrer. Erkläre Dinge Schritt für Schritt, mit einfachen Beispielen, und prüfe am Ende mit einer kleinen Frage, ob alles verstanden wurde.' },
+  { name: 'Kreativ-Autor', color: '#ec4899', temperature: 1.0, systemPrompt: 'Du bist ein kreativer Autor. Schreibe lebendig, bildhaft und originell – Geschichten, Gedichte, Slogans und mehr.' },
+  { name: 'Recherche', color: '#6366f1', temperature: 0.3, systemPrompt: 'Du bist ein gründlicher Rechercheur. Suche bei Faktenfragen im Internet, vergleiche Quellen und fasse die Ergebnisse klar strukturiert mit Quellenangaben zusammen.' },
 ];
 
 const RECOMMENDED = [
@@ -251,7 +252,10 @@ function applyTheme() {
   else document.documentElement.setAttribute('data-theme', settings.theme);
 }
 
-const avatarHtml = (a, cls = '') => `<div class="avatar ${cls}" style="background:${escapeHtml(a.color || '#7c5cff')}">${escapeHtml(a.emoji || '✨')}</div>`;
+// Avatar = App-Logo (Stern), Standard-Assistent im Logo-Verlauf, andere in ihrer Farbe
+const LOGO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.3 6.5 6.5 2.3-6.5 2.3L12 20.8l-2.3-6.5L3.2 12l6.5-2.3z" fill="#fff"/></svg>';
+const avatarBg = (a) => (!a.color || a.color === '#7c5cff' ? 'var(--grad)' : `linear-gradient(135deg, ${escapeHtml(a.color)}, color-mix(in srgb, ${escapeHtml(a.color)} 55%, #22c3ee))`);
+const avatarHtml = (a, cls = '', style = '') => `<div class="avatar ${cls}" style="background:${avatarBg(a)};${style}">${LOGO}</div>`;
 
 // ---------------------------------------------------------------------------
 // Ollama-Status, Modelle & Banner
@@ -307,31 +311,31 @@ function renderBanner() {
   let html = '';
   if (online === false) {
     if (settings.ollamaUrl) {
-      html = banner('error', '🔌', 'Ollama nicht erreichbar', `Unter ${escapeHtml(settings.ollamaUrl)} antwortet kein Ollama-Server.`,
+      html = banner('error', 'power', 'Ollama nicht erreichbar', `Unter ${escapeHtml(settings.ollamaUrl)} antwortet kein Ollama-Server.`,
         `<button class="btn btn-sm" data-banner="retry">${icon('refresh')} Erneut prüfen</button><button class="btn btn-sm" data-banner="settings">Einstellungen</button>`);
     } else if (localStatus && !localStatus.installed) {
       const win = localStatus.platform === 'win32';
-      html = banner('error', '📦', 'Ollama ist nicht installiert', 'Ollama ist der Motor für deine lokalen KIs. Installiere es einmalig – danach läuft alles offline.',
+      html = banner('error', 'download', 'Ollama ist nicht installiert', 'Ollama ist der Motor für deine lokalen KIs. Installiere es einmalig – danach läuft alles offline.',
         `${win ? `<button class="btn btn-sm btn-primary" data-banner="install">${icon('download')} Automatisch installieren</button>` : ''}
          <a class="btn btn-sm ${win ? '' : 'btn-primary'}" href="https://ollama.com/download" target="_blank" rel="noopener">${icon('external')} Download-Seite</a>
          <button class="btn btn-sm" data-banner="retry">${icon('refresh')} Erneut prüfen</button>`);
     } else {
-      html = banner('warn', '💤', 'Ollama läuft gerade nicht', 'Deine KIs schlafen noch. Soll ich Ollama für dich starten?',
+      html = banner('warn', 'power', 'Ollama läuft gerade nicht', 'Deine KIs schlafen noch. Soll ich Ollama für dich starten?',
         `<button class="btn btn-sm btn-primary" data-banner="start">${icon('power')} Ollama starten</button>
          <button class="btn btn-sm" data-banner="retry">${icon('refresh')} Erneut prüfen</button>`);
     }
   } else if (online && !models.length) {
-    html = banner('', '🧠', 'Noch keine KI installiert', 'Lade dein erstes Modell herunter – z. B. Llama 3.2 (ca. 2 GB, schnell und gut).',
+    html = banner('', 'cpu', 'Noch keine KI installiert', 'Lade dein erstes Modell herunter – z. B. Llama 3.2 (ca. 2 GB, schnell und gut).',
       `<button class="btn btn-sm btn-primary" data-banner="pull" data-model="llama3.2">${icon('download')} Llama 3.2 laden</button>
        <button class="btn btn-sm" data-banner="models">Alle Modelle</button>`);
     const dl = downloads.get('llama3.2');
-    if (dl) html = banner('', '⬇️', 'Llama 3.2 wird heruntergeladen …', escapeHtml(dl.text || ''), `<div style="width:160px">${progressHtml(dl.pct)}</div>`);
+    if (dl) html = banner('', 'download', 'Llama 3.2 wird heruntergeladen …', escapeHtml(dl.text || ''), `<div style="width:160px">${progressHtml(dl.pct)}</div>`);
   }
   el.banner.innerHTML = html;
 }
 
-const banner = (type, emoji, title, text, actions) =>
-  `<div class="banner ${type}"><div class="b-icon">${emoji}</div><div class="b-text"><strong>${title}</strong><span>${text}</span></div><div class="b-actions">${actions}</div></div>`;
+const banner = (type, ico, title, text, actions) =>
+  `<div class="banner ${type}"><div class="b-icon">${icon(ico)}</div><div class="b-text"><strong>${title}</strong><span>${text}</span></div><div class="b-actions">${actions}</div></div>`;
 const progressHtml = (pct) => `<div class="progress ${pct == null ? 'indeterminate' : ''}"><div style="width:${pct || 0}%"></div></div>`;
 
 el.banner.addEventListener('click', async (e) => {
@@ -347,7 +351,7 @@ el.banner.addEventListener('click', async (e) => {
     b.innerHTML = `${icon('loader', 'spin')} Starte …`;
     try {
       const r = await local.startOllama();
-      if (r.ok) toast('Ollama läuft ✨');
+      if (r.ok) toast('Ollama läuft');
       else toast(r.error || 'Start fehlgeschlagen', 'error');
     } catch (err) {
       toast(err.message, 'error');
@@ -387,7 +391,7 @@ async function pullModel(name) {
         updateDownloadsUi();
       }
     }
-    toast(`${name} ist bereit 🎉`);
+    toast(`${name} ist bereit`);
     downloads.delete(name);
     await refreshModels();
     if (!currentChat()?.model && !draft.model) { draft.model = name; renderModelSelect(); }
@@ -457,7 +461,7 @@ el.assistantPicker.addEventListener('click', () => {
   openMenu(el.assistantPicker, [
     ...assistants.map((a) => ({
       label: a.name, sub: a.model || 'Standardmodell', checked: a.id === curId,
-      html: `<div class="avatar" style="width:26px;height:26px;font-size:13px;background:${escapeHtml(a.color)}">${escapeHtml(a.emoji)}</div>`,
+      html: avatarHtml(a, 'avatar-sm'),
       onClick: () => selectAssistant(a.id),
     })),
     'sep',
@@ -513,8 +517,7 @@ function renderSidebar() {
     if (g !== last) { html += `<div class="chat-group">${g}</div>`; last = g; }
     const a = getAssistant(c.assistantId);
     html += `<button class="chat-item ${c.id === currentChatId ? 'active' : ''}" data-chat="${c.id}">
-      <span class="ci-emoji" style="background:${escapeHtml(a.color)}22">${escapeHtml(a.emoji)}</span>
-      <span class="ci-title">${escapeHtml(c.title)}</span>
+      <span class="ci-text"><span class="ci-title">${escapeHtml(c.title)}</span><span class="ci-sub">${escapeHtml(a.name)}${c.model ? ' · ' + escapeHtml(c.model.replace(/:latest$/, '')) : ''}</span></span>
       ${busy?.chatId === c.id ? '<span class="ci-busy"></span>' : ''}
       <span class="ci-more" data-chat-menu="${c.id}" title="Optionen">${icon('dots')}</span></button>`;
   }
@@ -696,10 +699,10 @@ function messageHtml(m, i, chat, isLastAi) {
 }
 
 function bodyHtml(text, streaming, m) {
-  if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">⚠️</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
+  if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
   if (streaming && !text.trim()) return '<div class="typing"><span></span><span></span><span></span></div>';
   let html = renderMarkdown(text);
-  if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">⏹ Gestoppt</p>';
+  if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
   return streaming ? html.replace(/(<\/p>|<\/li>)(?![\s\S]*(<\/p>|<\/li>))/, '<span class="cursor"></span>$1') : html;
 }
 
@@ -942,7 +945,11 @@ el.input.addEventListener('keydown', (e) => {
     send();
   }
 });
-el.composer.addEventListener('submit', (e) => { e.preventDefault(); busy ? stop() : send(); });
+el.composer.addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (busy && busy.chatId === currentChatId) stop();
+  else send();
+});
 
 function updateComposer() {
   const chat = currentChat();
@@ -1031,7 +1038,10 @@ micBtn.addEventListener('click', () => {
 // Senden & Generieren
 // ---------------------------------------------------------------------------
 async function send() {
-  if (busy) return;
+  if (busy) {
+    toast(busy.chatId === currentChatId ? 'Die KI antwortet noch – Esc oder ■ zum Stoppen.' : 'Ein anderer Chat antwortet gerade.');
+    return;
+  }
   if (pending.some((p) => p.loading)) return toast('Anhänge werden noch gelesen …');
   const text = el.input.value.trim();
   if (!text && !pending.length) return;
@@ -1039,7 +1049,9 @@ async function send() {
   const model = chat ? chat.model : draft.model;
   if (!online) return toast('Ollama ist nicht verbunden.', 'error');
   if (!model) { toast('Bitte zuerst ein Modell herunterladen.', 'error'); openModels(); return; }
-  if (dictation.active) dictation.toggle();
+  if (dictation.active) dictation.abort(); // sonst schreibt das Diktat den Text nachträglich wieder ins Feld
+  dictBase = '';
+  dictFinal = '';
 
   if (!chat) {
     chat = {
@@ -1078,9 +1090,11 @@ async function generate(chat) {
   updateComposer();
   renderSidebar();
   const isFirst = chat.messages.filter((m) => m.role === 'user').length === 1;
+  // Merkt sich, was in dieser Antwort schon ausgeführt wurde (Schutz vor Endlosschleifen)
+  const turn = { done: new Set() };
   try {
-    for (let round = 0; round < 10; round++) {
-      const again = await generateRound(chat, controller.signal);
+    for (let round = 0; round < 6; round++) {
+      const again = await generateRound(chat, controller.signal, turn);
       if (!again || controller.signal.aborted) break;
     }
   } finally {
@@ -1101,7 +1115,7 @@ async function generate(chat) {
   if (isFirst && settings.autoTitle) makeTitle(chat);
 }
 
-async function generateRound(chat, signal) {
+async function generateRound(chat, signal, turn = { done: new Set() }) {
   const assistant = getAssistant(chat.assistantId);
   const model = chat.model;
   const caps = await getCaps(model);
@@ -1116,7 +1130,9 @@ async function generateRound(chat, signal) {
   });
 
   if (!sysInfo && agentOn) sysInfo = await localFs.info().catch(() => null);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn }) }];
+  const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+  const intent = wantsExecution(lastUser?.content);
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
   for (const m of chat.messages) {
@@ -1133,7 +1149,9 @@ async function generateRound(chat, signal) {
     } else if (m.role === 'tool') {
       const content = m.output || STATUS_TEXT[m.status] || '';
       if (useTools && m.native) messages.push({ role: 'tool', content, tool_name: m.name });
-      else messages.push({ role: 'user', content: `[Ergebnis der Aktion „${(TOOL_META[m.name]?.label(m.args || {})) || m.name}“]\n${content}` });
+      else {
+        messages.push({ role: 'user', content: `[Echtes Ergebnis der Aktion „${(TOOL_META[m.name]?.label(m.args || {})) || m.name}“]\n${content}\n\n(Diese Aktion ist erledigt – wiederhole sie NICHT. Antworte dem Nutzer jetzt mit dem echten Ergebnis oder mache einen neuen, anderen Schritt.)` });
+      }
     }
   }
   if (droppedImages && !chat.warnedVision) {
@@ -1154,37 +1172,55 @@ async function generateRound(chat, signal) {
   const auto = settings.tts.auto && speaker.supported;
   if (auto) speaker.beginStream(msg.id);
   const toolCalls = [];
+  // Eigener Abbruch pro Runde: Nach einem Befehl-/Such-Block wird sofort angehalten,
+  // damit die KI kein Ergebnis erfindet, sondern auf das echte wartet.
+  const roundCtrl = new AbortController();
+  const onAbort = () => roundCtrl.abort();
+  signal.addEventListener('abort', onAbort, { once: true });
   try {
-    for await (const ev of ollama.chat(body, signal)) {
+    for await (const ev of ollama.chat(body, roundCtrl.signal)) {
       if (ev.message?.content) msg.content += ev.message.content;
       if (ev.message?.thinking) msg.thinking += ev.message.thinking;
       if (ev.message?.tool_calls?.length) toolCalls.push(...ev.message.tool_calls);
       if (ev.done) msg.stats = { eval_count: ev.eval_count, eval_duration: ev.eval_duration, total_duration: ev.total_duration };
+      if (!toolCalls.length && (agentOn || webOn)) {
+        const { text } = splitThink(msg.content);
+        const end = findStopBlock(text, { agent: agentOn, webSearch: webOn, intent });
+        if (end > 0) {
+          msg.content = msg.content.slice(0, msg.content.length - text.length + end);
+          roundCtrl.abort();
+          if (currentChatId === chat.id) scheduleStreamRender(msg);
+          break;
+        }
+      }
       if (currentChatId === chat.id) scheduleStreamRender(msg);
       if (auto) speaker.feed(splitThink(msg.content).text);
       persist(chat);
     }
     if (auto) speaker.feed(splitThink(msg.content).text, true);
   } catch (err) {
-    if (err.name === 'AbortError') {
+    if (err.name === 'AbortError' && !signal.aborted) {
+      // Selbst angehalten, weil eine Aktion gefunden wurde – kein Fehler
+    } else if (err.name === 'AbortError') {
       msg.stopped = true;
       busy.msgId = null;
       return false;
-    }
-    // Modell kann keine Tools/Thinking -> ohne erneut versuchen
-    if (/does not support tools/i.test(err.message) && !noTools.has(model)) {
+    } else if (/does not support tools/i.test(err.message) && !noTools.has(model)) {
+      // Modell kann keine Tools/Thinking -> ohne erneut versuchen
       noTools.add(model);
       chat.messages.splice(chat.messages.indexOf(msg), 1);
       return true;
-    }
-    if (/does not support think/i.test(err.message) && !noThink.has(model)) {
+    } else if (/does not support think/i.test(err.message) && !noThink.has(model)) {
       noThink.add(model);
       chat.messages.splice(chat.messages.indexOf(msg), 1);
       return true;
+    } else {
+      msg.error = /not found/i.test(err.message) ? `Modell „${model}“ ist nicht installiert. Lade es unter „Modelle“ herunter.` : err.message;
+      busy.msgId = null;
+      return false;
     }
-    msg.error = /not found/i.test(err.message) ? `Modell „${model}“ ist nicht installiert. Lade es unter „Modelle“ herunter.` : err.message;
-    busy.msgId = null;
-    return false;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
   }
   busy.msgId = null;
   if (toolCalls.length) msg.tool_calls = toolCalls;
@@ -1199,14 +1235,18 @@ async function generateRound(chat, signal) {
       return { name: tc.function?.name, args, native: true };
     });
   } else {
-    actions = parseTextActions(splitThink(msg.content).text, { agent: agentOn, webSearch: webOn });
+    actions = parseTextActions(splitThink(msg.content).text, { agent: agentOn, webSearch: webOn, intent });
   }
+  // Schon ausgeführte Aktionen nicht wiederholen
+  const key = (a) => `${a.name}:${JSON.stringify(a.args || {})}`;
+  actions = actions.filter((a) => !turn.done.has(key(a)));
   if (!actions.length) return false;
 
   let gotInfo = false;
   let anyRan = false;
   for (const act of actions) {
     if (signal.aborted) return false;
+    turn.done.add(key(act));
     const ran = await runAction(chat, act, signal);
     if (ran) { anyRan = true; if (INFO_TOOLS.has(act.name)) gotInfo = true; }
   }
@@ -1255,6 +1295,7 @@ async function runAction(chat, act, signal) {
       signal,
       searchEngine: settings.searchEngine,
       searchKeys: settings.searchKeys,
+      visibleTerminal: settings.visibleTerminal,
       progress: (text, pct) => {
         t.progress = { text, pct };
         if (Date.now() - lastShow > 200) { lastShow = Date.now(); show(); }
@@ -1333,7 +1374,7 @@ $('#toggleTts').addEventListener('click', () => {
   if (!settings.tts.auto) speaker.stop();
   saveSettings();
   renderToggles();
-  toast(settings.tts.auto ? 'Antworten werden automatisch vorgelesen 🔊' : 'Vorlesen aus');
+  toast(settings.tts.auto ? 'Antworten werden automatisch vorgelesen' : 'Vorlesen aus');
 });
 speaker.onstate = (speaking, id) => {
   renderToggles();
@@ -1359,7 +1400,7 @@ async function renderModelsModal() {
   const installed = new Set(models.map((m) => m.name));
   box.innerHTML = `
     <div class="list-item" style="background:var(--bg-soft)">
-      <div class="li-main"><div class="li-title">${online ? '🟢 Ollama läuft' : '🔴 Ollama ist aus'} ${ollamaVersion && online ? `<span class="badge">v${escapeHtml(ollamaVersion)}</span>` : ''}</div>
+      <div class="li-main"><div class="li-title"><span class="state-dot ${online ? 'on' : ''}"></span>${online ? 'Ollama läuft' : 'Ollama ist aus'} ${ollamaVersion && online ? `<span class="badge">v${escapeHtml(ollamaVersion)}</span>` : ''}</div>
       <div class="li-sub">${online ? `${models.length} Modelle installiert · ${running.length} aktiv im Speicher` : 'Starte Ollama, um Modelle zu nutzen'}</div></div>
       <div class="li-actions">${online ? `<button class="btn btn-sm" data-ollama="stop">${icon('power')} Beenden</button>` : `<button class="btn btn-sm btn-primary" data-ollama="start">${icon('power')} Starten</button>`}</div>
     </div>
@@ -1394,7 +1435,7 @@ async function renderModelsModal() {
     getCaps(m.name).then((caps) => {
       const c = box.querySelector(`[data-caps="${CSS.escape(m.name)}"]`);
       if (!c || !caps) return;
-      const labels = { vision: '👁 Bilder', tools: '🛠 Agent', thinking: '💭 Denkt' };
+      const labels = { vision: 'Bilder', tools: 'Agent', thinking: 'Denkt nach' };
       c.innerHTML = caps.filter((x) => labels[x]).map((x) => `<span class="badge accent">${labels[x]}</span>`).join(' ');
     });
   }
@@ -1469,7 +1510,7 @@ function openAssistants() {
         <div class="li-actions"><button class="btn btn-sm" data-chat-with="${a.id}">Chatten</button>
         <button class="icon-btn" data-edit-assistant="${a.id}" title="Bearbeiten">${icon('edit')}</button>
         ${assistants.length > 1 ? `<button class="icon-btn" data-del-assistant="${a.id}" title="Löschen">${icon('trash')}</button>` : ''}</div></div>`).join('')}</div>
-      <div style="margin-top:18px"><div class="section-title">Vorlagen</div><div class="chips">${TEMPLATES.map((t, i) => `<button class="chip" data-template="${i}"><b>${t.emoji} ${t.name}</b><small>Hinzufügen</small></button>`).join('')}</div></div>`;
+      <div style="margin-top:18px"><div class="section-title">Vorlagen</div><div class="chips">${TEMPLATES.map((t, i) => `<button class="chip" data-template="${i}"><b>${t.name}</b><small>Hinzufügen</small></button>`).join('')}</div></div>`;
   };
   render();
   m.el.addEventListener('click', async (e) => {
@@ -1500,11 +1541,11 @@ function openAssistants() {
 
 function editAssistant(a = null, onSaved) {
   const isNew = !a;
-  const data = a ? { ...a } : { id: uid(), name: '', emoji: '🤖', color: COLORS[assistants.length % COLORS.length], model: '', systemPrompt: '', temperature: 0.7, numCtx: 8192, agent: true };
+  const data = a ? { ...a } : { id: uid(), name: '', color: COLORS[assistants.length % COLORS.length], model: '', systemPrompt: '', temperature: 0.7, numCtx: 8192, agent: true };
   const m = openModal({
     title: isNew ? 'Neuer Assistent' : 'Assistent bearbeiten',
     body: `
-      <div class="row"><div class="field"><label>Emoji</label><input class="input emoji-input" id="aEmoji" value="${escapeHtml(data.emoji)}" maxlength="4"></div>
+      <div class="row"><div id="aAvatar">${avatarHtml(data)}</div>
         <div class="field grow"><label>Name</label><input class="input" id="aName" value="${escapeHtml(data.name)}" placeholder="z. B. Mathe-Genie"></div></div>
       <div class="field"><span class="field-label">Farbe</span><div class="swatches">${COLORS.map((c) => `<button type="button" class="swatch ${c === data.color ? 'sel' : ''}" data-color="${c}" style="background:${c}"></button>`).join('')}</div></div>
       <div class="field"><label>Modell</label><select class="input" id="aModel"><option value="">Standard (aktuell gewähltes Modell)</option>
@@ -1523,12 +1564,11 @@ function editAssistant(a = null, onSaved) {
   });
   m.el.addEventListener('click', (e) => {
     const sw = e.target.closest('[data-color]');
-    if (sw) { data.color = sw.dataset.color; $$('.swatch', m.el).forEach((s) => s.classList.toggle('sel', s === sw)); }
+    if (sw) { data.color = sw.dataset.color; $$('.swatch', m.el).forEach((s) => s.classList.toggle('sel', s === sw)); $('#aAvatar', m.el).innerHTML = avatarHtml(data); }
   });
   $('#aTemp', m.el).oninput = (e) => { $('#aTempVal', m.el).textContent = e.target.value; };
   $('#aSave', m.el).onclick = () => {
     data.name = $('#aName', m.el).value.trim() || 'Assistent';
-    data.emoji = $('#aEmoji', m.el).value.trim() || '🤖';
     data.model = $('#aModel', m.el).value;
     data.systemPrompt = $('#aPrompt', m.el).value.trim();
     data.temperature = Number($('#aTemp', m.el).value);
@@ -1571,6 +1611,8 @@ function openSettings() {
 
       <div><div class="section-title">Agent (Zugriff auf deinen PC)</div>
         ${sw('sAgent', settings.agent, 'Agent-Modus', 'KI darf Dateien/Ordner anlegen, Befehle ausführen und Ollama steuern')}
+        ${sw('sTerm', settings.visibleTerminal, 'Sichtbares KI-Terminal', 'Befehle laufen in einem echten Terminal-Fenster auf deinem Bildschirm – die KI tippt sie dort selbst ein')}
+        <div><button class="btn btn-sm" id="sTermOpen">${icon('terminal')} KI-Terminal jetzt öffnen</button></div>
         <div class="field"><label>Erlaubnis</label><select class="input" id="sApprove">
           <option value="none" ${settings.autoApprove === 'none' ? 'selected' : ''}>Bei jeder Aktion fragen (empfohlen)</option>
           <option value="safe" ${settings.autoApprove === 'safe' ? 'selected' : ''}>Ollama-Aktionen & Lesen automatisch, Schreiben/Terminal fragen</option>
@@ -1620,6 +1662,10 @@ function openSettings() {
   bind('#sTitle', (t) => { settings.autoTitle = t.checked; });
   bind('#sThink', (t) => { settings.think = t.checked; });
   bind('#sAgent', (t) => { settings.agent = t.checked; });
+  bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
+  q('#sTermOpen').onclick = async () => {
+    try { const r = await local.openTerminal(); toast(r.ok ? 'KI-Terminal ist offen' : 'Kein Terminal-Fenster möglich', r.ok ? '' : 'error'); } catch (err) { toast(err.message, 'error'); }
+  };
   bind('#sApprove', async (t) => {
     if (t.value === 'all' && !(await confirmDialog('Die KI kann dann <b>ohne Nachfrage</b> Dateien überschreiben und Terminal-Befehle ausführen. Wirklich?', { title: 'Alles automatisch erlauben?', ok: 'Ja, erlauben', danger: true }))) {
       t.value = settings.autoApprove;

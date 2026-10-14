@@ -30,17 +30,17 @@ function inline(text) {
   return s;
 }
 
-const ACTION_LABELS = { ordner: '📁 Ordner anlegen', folder: '📁 Ordner anlegen', befehl: '⚡ Terminal-Befehl', terminal: '⚡ Terminal-Befehl', command: '⚡ Terminal-Befehl', ollama: '🦙 Ollama-Aktion' };
+const ACTION_LABELS = { ordner: 'Ordner anlegen', folder: 'Ordner anlegen', befehl: 'Terminal-Befehl', terminal: 'Terminal-Befehl', command: 'Terminal-Befehl', ollama: 'Ollama-Aktion' };
 
 function codeBlock(info, code, open) {
   info = (info || '').trim();
   const kind = info.toLowerCase();
   // Such-Blöcke sind interne Anweisungen der KI – unauffällig darstellen
   if (kind === 'suche' || kind === 'search') {
-    return `<div class="search-hint">🔎 Recherchiere: ${escapeHtml(code.trim())}</div>`;
+    return `<div class="search-hint">Recherchiere im Web: ${escapeHtml(code.trim())}</div>`;
   }
   const file = info.match(/^(?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*(.+)$/i);
-  const label = file ? `📄 ${escapeHtml(file[1].trim())}` : ACTION_LABELS[kind] || escapeHtml(info.split(/\s+/)[0] || 'code');
+  const label = file ? `Datei: ${escapeHtml(file[1].trim())}` : ACTION_LABELS[kind] || escapeHtml(info.split(/\s+/)[0] || 'code');
   const path = file ? ` data-path="${escapeHtml(file[1].trim())}"` : '';
   const lang = file ? '' : ` data-lang="${escapeHtml(info.split(/\s+/)[0] || '')}"`;
   return `<div class="code-block${open ? ' streaming' : ''}${file ? ' file-block' : ''}"${path}${lang}><div class="code-head"><span>${label}</span>` +

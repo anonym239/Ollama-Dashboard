@@ -115,6 +115,7 @@ export class Dictation {
     this.rec.interimResults = true;
     this.rec.lang = navigator.language || 'de-DE';
     this.rec.onresult = (e) => {
+      if (this.discard) return;
       let finalText = '';
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -128,10 +129,19 @@ export class Dictation {
     this.rec.onerror = (e) => { this.active = false; onState(false, e.error); };
   }
 
+  // Sofort beenden und noch ausstehende Ergebnisse verwerfen
+  abort() {
+    if (!this.supported || !this.active) return;
+    this.active = false;
+    this.discard = true;
+    try { this.rec.abort(); } catch { /* egal */ }
+  }
+
   toggle() {
     if (!this.supported) return;
     if (this.active) { this.rec.stop(); return; }
     try {
+      this.discard = false;
       this.rec.start();
       this.active = true;
       this.onState(true);

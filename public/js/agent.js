@@ -19,7 +19,8 @@ export const TOOL_DEFS = [
   fn('read_file', 'Liest eine Textdatei.', { path: str('Dateipfad') }, ['path']),
   fn('list_directory', 'Zeigt den Inhalt eines Ordners.', { path: str('Ordnerpfad, z. B. Desktop') }, ['path']),
   fn('open_path', 'Öffnet eine Datei oder einen Ordner mit dem Standardprogramm.', { path: str('Pfad') }, ['path']),
-  fn('run_command', 'Führt einen Terminal-Befehl auf dem Computer aus und gibt die Ausgabe zurück.', { command: str('Der Befehl'), cwd: str('Arbeitsordner (optional)') }, ['command']),
+  fn('run_command', 'Tippt einen Befehl sichtbar in ein echtes Terminal-Fenster auf dem Bildschirm des Nutzers, führt ihn aus und gibt die echte Ausgabe zurück. Unter Windows ist das cmd.', { command: str('Der Befehl') }, ['command']),
+  fn('open_terminal', 'Öffnet das sichtbare KI-Terminal-Fenster auf dem Bildschirm des Nutzers.'),
   fn('list_models', 'Listet die installierten Ollama-KI-Modelle.'),
   fn('running_models', 'Zeigt, welche Modelle gerade im Arbeitsspeicher geladen sind.'),
   fn('pull_model', 'Lädt ein neues KI-Modell aus der Ollama-Bibliothek herunter (z. B. llama3.2, qwen2.5:7b, gemma3).', { name: str('Modellname') }, ['name']),
@@ -48,6 +49,7 @@ export const TOOL_META = {
   create_folder: { level: 'write', icon: 'folderPlus', label: (a) => `Ordner anlegen: ${a.path}` },
   write_file: { level: 'write', icon: 'save', label: (a) => `Datei speichern: ${a.path}` },
   run_command: { level: 'command', icon: 'terminal', label: (a) => `Terminal: ${a.command}` },
+  open_terminal: { level: 'auto', icon: 'terminal', label: () => 'KI-Terminal öffnen' },
 };
 
 export function needsApproval(name, autoApprove) {
@@ -58,38 +60,120 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch }) {
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model }) {
   const now = new Date().toLocaleString('de-DE', { dateStyle: 'full', timeStyle: 'short' });
+  const win = sys?.platform === 'win32';
   const os = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[sys?.platform] || 'unbekannt';
+  const desk = sys?.desktop || (win ? 'C:\\Users\\<Name>\\Desktop' : '~/Desktop');
   const parts = [];
   if (assistant?.systemPrompt?.trim()) parts.push(assistant.systemPrompt.trim());
   else parts.push(`Du bist ${assistant?.name || 'ein KI-Assistent'}, ein hilfreicher, kluger KI-Assistent.`);
-  parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers. Datum: ${now}. Antworte in der Sprache des Nutzers, klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
+  parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte in der Sprache des Nutzers, klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
 
   if (agent) {
-    parts.push(`Du kannst direkt auf dem Computer handeln (Betriebssystem: ${os}${sys?.desktop ? `, Desktop: ${sys.desktop}` : ''}). Der Nutzer bestätigt jede Aktion per Klick – erkläre also nicht nur, sondern erledige Aufgaben selbst, wenn er darum bittet.`);
-    const blocks = [
-      'Datei speichern – Codeblock mit Pfad als Kopfzeile, vollständiger Inhalt, ein Block pro Datei:\n```datei:Desktop/mein-projekt/index.html\n<!DOCTYPE html>\n...\n```',
-      'Ordner anlegen:\n```ordner\nDesktop/mein-projekt\n```',
-      `Terminal-Befehl ausführen (${os === 'Windows' ? 'Windows-cmd' : 'Shell'}):\n\`\`\`befehl\n...\n\`\`\``,
-      'Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):\n```ollama\npull llama3.2\n```',
-    ];
-    if (webSearch) blocks.unshift('Im Internet suchen – wenn du etwas nicht sicher weißt oder es um aktuelle Dinge geht (danach aufhören, du bekommst die Ergebnisse):\n```suche\nSuchbegriff\n```');
-    if (nativeTools) {
-      parts.push('Dafür hast du Werkzeuge (Funktionen). Alternativ funktionieren auch diese Blöcke:\n\n' + blocks.join('\n\n'));
-    } else {
-      parts.push('Dafür schreibst du spezielle Codeblöcke, die die App automatisch ausführt:\n\n' + blocks.join('\n\n'));
-    }
-    parts.push('Wenn der Nutzer z. B. sagt „programmiere mir X“, lege einen passenden Projektordner auf dem Desktop an und speichere alle Dateien vollständig mit datei:-Blöcken. Nutze die Blöcke nur, wenn wirklich etwas auf dem Computer passieren soll oder du Informationen brauchst – normale Fragen beantwortest du einfach.');
+    parts.push(`## Handeln auf dem Computer
+Betriebssystem: ${os}. Desktop-Ordner: ${desk}. Home-Ordner: ${sys?.home || '~'}.
+Du kannst direkt auf dem Computer handeln. Der Nutzer bestätigt jede Aktion per Klick – erkläre also nicht nur, sondern erledige Aufgaben selbst. Dafür schreibst du spezielle Codeblöcke, die die App ausführt${nativeTools ? ' (oder du nutzt deine Werkzeuge/Funktionen)' : ''}:
+
+1. Ordner anlegen (immer so, nie per Terminal):
+\`\`\`ordner
+Desktop/mein-projekt
+\`\`\`
+
+2. Datei speichern (immer so, nie per echo; vollständiger Inhalt, ein Block pro Datei):
+\`\`\`datei:Desktop/mein-projekt/index.html
+<!DOCTYPE html>
+...
+\`\`\`
+
+3. Befehl im sichtbaren Terminal ausführen – der Nutzer sieht ein echtes ${win ? 'CMD-' : ''}Terminal-Fenster, in das du tippst:
+\`\`\`befehl
+${win ? 'systeminfo' : 'uname -a'}
+\`\`\`
+${win ? `Es ist die Windows-Eingabeaufforderung (cmd), KEIN Linux: Pfade mit Backslash \\ und in Anführungszeichen, z. B. dir "${desk}". Das Terminal startet im Desktop-Ordner. Programme/Ordner/Webseiten sichtbar öffnen: start notepad, start "" "${desk}", start https://beispiel.de` : `Das Terminal startet im Desktop-Ordner. Ordner/Programme öffnen: ${os === 'macOS' ? 'open' : 'xdg-open'} PFAD`}
+
+4. Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):
+\`\`\`ollama
+pull llama3.2
+\`\`\`
+${webSearch ? `
+5. Im Internet suchen, wenn du etwas nicht sicher weißt oder es um Aktuelles geht:
+\`\`\`suche
+Suchbegriff
+\`\`\`
+` : ''}
+WICHTIG:
+- Nach einem befehl-, ollama- oder suche-Block hörst du SOFORT auf zu schreiben. Die App führt ihn aus und gibt dir das echte Ergebnis. Erfinde NIEMALS Ausgaben oder Ergebnisse.
+- Ordner und Dateien IMMER mit ordner- und datei:-Blöcken anlegen – das funktioniert zuverlässig, Terminal-Befehle dafür nicht.
+- Relative Pfade wie Desktop/projekt beziehen sich auf den Desktop des Nutzers.
+- Nutze die Blöcke nur, wenn etwas auf dem Computer passieren soll. Normale Fragen beantwortest du einfach.
+
+Beispiel – Nutzer: „Erstelle auf dem Desktop einen Ordner Test mit einer Datei hallo.txt, in der Hallo steht, und öffne ihn.“
+Deine Antwort:
+Klar, mache ich!
+\`\`\`ordner
+Desktop/Test
+\`\`\`
+\`\`\`datei:Desktop/Test/hallo.txt
+Hallo
+\`\`\`
+\`\`\`befehl
+${win ? 'start "" "Test"' : 'xdg-open Test'}
+\`\`\`
+
+Beispiel – Nutzer: „Wie ist meine IP-Adresse?“
+Deine Antwort:
+Ich schaue nach.
+\`\`\`befehl
+${win ? 'ipconfig' : 'ip addr'}
+\`\`\`
+
+Wenn der Nutzer „programmiere mir X“ sagt: lege einen Projektordner auf dem Desktop an, speichere alle Dateien vollständig mit datei:-Blöcken und öffne das Ergebnis danach mit einem befehl-Block.`);
   } else if (webSearch) {
-    parts.push('Wenn du etwas nicht sicher weißt oder es um aktuelle Dinge geht, suche im Internet – mit dem Werkzeug web_search oder mit einem Block:\n```suche\nSuchbegriff\n```\nDanach aufhören, du bekommst die Ergebnisse.');
+    parts.push('Wenn du etwas nicht sicher weißt oder es um aktuelle Dinge geht, suche im Internet – mit dem Werkzeug web_search oder mit einem Block:\n```suche\nSuchbegriff\n```\nDanach sofort aufhören, du bekommst die echten Ergebnisse. Erfinde nichts.');
   }
   if (webSearch) parts.push('Wenn du Suchergebnisse bekommst: Formuliere eine eigene, gut verständliche Antwort daraus (nicht einfach abschreiben) und nenne am Ende kurz die wichtigsten Quellen als Links.');
   return parts.join('\n\n');
 }
 
+// Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
+export function wantsExecution(text) {
+  return /(führ|ausführ|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));
+}
+
+const SHELL_LANGS = new Set(['cmd', 'bat', 'batch', 'powershell', 'ps1', 'pwsh', 'bash', 'sh', 'shell', 'zsh', 'console']);
+const STOP_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama']);
+
+function blockKind(info, intent) {
+  const kind = info.trim().toLowerCase();
+  if (SHELL_LANGS.has(kind)) return intent ? 'befehl' : '';
+  return kind;
+}
+
+// Erster vollständiger Block, nach dem die KI auf ein echtes Ergebnis warten muss (Ende-Index)
+export function findStopBlock(content, { agent, webSearch, intent }) {
+  const re = /```[ \t]*([^\n`]*)\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(content))) {
+    const kind = blockKind(m[1], intent);
+    if (!STOP_KINDS.has(kind)) continue;
+    if ((kind === 'suche' || kind === 'search') ? webSearch : agent) return m.index + m[0].length;
+  }
+  return -1;
+}
+
+function shellCommand(kind, body) {
+  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l));
+  if (!lines.length) return '';
+  if (['powershell', 'ps1', 'pwsh'].includes(kind)) {
+    return `powershell -NoProfile -Command "${lines.join('; ').replace(/"/g, '\\"')}"`;
+  }
+  // Prompt-Zeichen entfernen, falls die KI "C:\> dir" oder "$ ls" schreibt
+  return lines.map((l) => l.replace(/^(?:[A-Za-z]:\\[^>]*>|\$|>)\s*/, '')).join(' && ');
+}
+
 // Aktionen aus Codeblöcken lesen (funktioniert auch mit kleinen Modellen ohne Tool-Support)
-export function parseTextActions(content, { agent, webSearch }) {
+export function parseTextActions(content, { agent, webSearch, intent = false }) {
   const actions = [];
   const re = /```[ \t]*([^\n`]*)\n([\s\S]*?)```/g;
   let m;
@@ -97,7 +181,8 @@ export function parseTextActions(content, { agent, webSearch }) {
     const info = m[1].trim();
     const body = m[2].replace(/\n$/, '');
     const file = info.match(/^(?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*(.+)$/i);
-    const kind = info.toLowerCase();
+    const raw = info.toLowerCase();
+    const kind = blockKind(info, intent);
     if (file && agent) {
       actions.push({ name: 'write_file', args: { path: file[1].trim(), content: body + '\n' } });
     } else if (kind === 'suche' || kind === 'search') {
@@ -105,10 +190,10 @@ export function parseTextActions(content, { agent, webSearch }) {
     } else if (!agent) {
       continue;
     } else if (kind === 'ordner' || kind === 'folder') {
-      body.split('\n').map((l) => l.trim()).filter(Boolean).forEach((p) => actions.push({ name: 'create_folder', args: { path: p } }));
+      body.split('\n').map((l) => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean).forEach((p) => actions.push({ name: 'create_folder', args: { path: p } }));
     } else if (kind === 'befehl' || kind === 'terminal' || kind === 'command') {
-      const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l));
-      if (lines.length) actions.push({ name: 'run_command', args: { command: lines.join(' && ') } });
+      const command = shellCommand(raw, body);
+      if (command) actions.push({ name: 'run_command', args: { command } });
     } else if (kind === 'ollama') {
       for (const line of body.split('\n').map((l) => l.trim()).filter(Boolean)) {
         const [cmd, ...rest] = line.replace(/^ollama\s+/, '').split(/\s+/);
@@ -124,7 +209,7 @@ export function parseTextActions(content, { agent, webSearch }) {
 
 // Führt ein Werkzeug aus. ui.progress(text, pct) zeigt Fortschritt, signal bricht ab.
 // Rückgabe: { output: Text für die KI, display: Text für den Nutzer, sources? }
-export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {} } = {}) {
+export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {}, visibleTerminal = true } = {}) {
   switch (name) {
     case 'web_search': {
       const r = await web.search(String(args.query || ''), searchEngine, searchKeys);
@@ -155,7 +240,7 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
     }
     case 'list_directory': {
       const r = await localFs.list(args.path || 'Desktop');
-      const list = r.entries.map((e) => (e.dir ? `📁 ${e.name}/` : `📄 ${e.name}`)).join('\n') || '(leer)';
+      const list = r.entries.map((e) => (e.dir ? `${e.name}/` : e.name)).join('\n') || '(leer)';
       return { output: `Inhalt von ${r.path}:\n${list}`, display: list, path: r.path };
     }
     case 'open_path': {
@@ -163,10 +248,25 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       return { output: `Geöffnet: ${r.path}`, display: `Geöffnet: ${r.path}` };
     }
     case 'run_command': {
-      progress('Läuft …');
-      const r = await local.exec(String(args.command || ''), 300, args.cwd);
+      const command = String(args.command || '');
+      let r;
+      if (visibleTerminal && !args.cwd) {
+        progress('Läuft im KI-Terminal …');
+        r = await local.terminal(command, 600);
+      } else {
+        progress('Läuft …');
+        r = await local.exec(command, 300, args.cwd);
+      }
       const text = [r.stdout, r.stderr].filter((x) => x && x.trim()).join('\n').trim() || '(keine Ausgabe)';
-      return { output: `Exit-Code ${r.code}\n${text.slice(0, 12000)}`, display: text, code: r.code, failed: r.code !== 0 };
+      const ran = r.command && r.command !== command ? `Ausgeführt als: ${r.command}\n` : '';
+      return {
+        output: `${ran}Exit-Code ${r.code}${r.code === 0 ? ' (Erfolg)' : ' (Fehler)'}\n${text.slice(0, 12000)}`,
+        display: text, code: r.code, failed: r.code !== 0, visible: r.visible,
+      };
+    }
+    case 'open_terminal': {
+      const r = await local.openTerminal();
+      return { output: r.ok ? 'Das KI-Terminal-Fenster ist offen und sichtbar.' : 'Konnte kein Terminal-Fenster öffnen.', display: r.ok ? 'Terminal geöffnet' : 'Nicht möglich' };
     }
     case 'list_models': {
       const ms = await ollama.models();

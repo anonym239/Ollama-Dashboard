@@ -9,7 +9,8 @@ Ein modernes, cleanes KI-Chat-Dashboard für deine **lokalen KIs mit [Ollama](ht
 - 🧠 **Modelle verwalten**: KIs herunterladen (mit Fortschritt), starten, stoppen und löschen, direkt in der App
 - ⚡ **Agent-Modus**: Die KI kann **mit deiner Erlaubnis** auf deinem PC handeln:
   - Ordner auf dem Desktop anlegen, Dateien speichern und lesen (z. B. „Programmiere mir Snake“, dann landet ein fertiges Projekt auf dem Desktop)
-  - Terminal-Befehle ausführen
+  - **Sichtbares KI-Terminal**: Die KI öffnet ein echtes CMD- bzw. Terminal-Fenster auf deinem Bildschirm, **tippt Befehle selbst ein** und arbeitet mit der echten Ausgabe weiter, ohne Ergebnisse zu erfinden.
+  - Typische Fehler kleiner Modelle werden automatisch korrigiert, z. B. `mkdir -p Desktop/ordner`, falsche Schrägstriche oder ein OneDrive-Desktop.
   - Ollama steuern: Modelle herunterladen, starten, stoppen, Ollama starten oder beenden
   - Jede Aktion erscheint als Karte mit **Erlauben / Ablehnen**
   - Funktioniert auch mit **kleinen KIs**: Modelle ohne Tool-Support nutzen einfache Code-Blöcke wie ` ```datei:Desktop/projekt/index.html `

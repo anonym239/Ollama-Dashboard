@@ -32,6 +32,10 @@ async function test(name, fn) {
   await test('URLs bleiben unverändert', () => assert.strictEqual(fix('start https://ollama.com/library'), 'start https://ollama.com/library'));
   await test('Desktop mit Leerzeichen wird gequotet', () => assert.strictEqual(fix('mkdir Desktop/x', 'C:\\Users\\A\\OneDrive - Firma\\Desktop'), 'if not exist "C:\\Users\\A\\OneDrive - Firma\\Desktop\\x" mkdir "C:\\Users\\A\\OneDrive - Firma\\Desktop\\x"'));
   await test('Schalter wie /d bleiben', () => assert.strictEqual(fix('dir /b'), 'dir /b'));
+  await test('mkdir -p (Linux) wird übersetzt', () => assert.strictEqual(fix('mkdir -p Desktop/test_folder'), `if not exist ${D}\\test_folder mkdir ${D}\\test_folder`));
+  await test('ls / cat / touch werden übersetzt', () => assert.strictEqual(fix('ls -la && cat a.txt && touch b.txt'), 'dir && type a.txt && type nul >> b.txt'));
+  await test('rm -rf wird übersetzt', () => assert.strictEqual(fix('rm -rf alt'), 'rmdir /s /q alt'));
+  await test('"cat" in Texten bleibt', () => assert.strictEqual(fix('echo concat category'), 'echo concat category'));
 
   console.log('\nDateizugriff');
   const desk = await srv.desktopDir();

@@ -18,6 +18,8 @@ export const local = {
   startOllama: () => call('/local/ollama/start', { method: 'POST' }),
   stopOllama: () => call('/local/ollama/stop', { method: 'POST' }),
   exec: (command, timeout, cwd) => call('/local/exec', { method: 'POST', body: { command, timeout, cwd } }),
+  terminal: (command, timeout) => call('/local/terminal/run', { method: 'POST', body: { command, timeout } }),
+  openTerminal: () => call('/local/terminal/open', { method: 'POST' }),
 };
 
 export const localFs = {
