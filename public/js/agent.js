@@ -300,6 +300,51 @@ export function makeQuery(text) {
   return (words.length ? words : String(text).split(/\s+/)).slice(0, 10).join(' ');
 }
 
+// ---------- Themenwechsel erkennen ----------
+// Kleine Modelle beziehen jede neue Frage auf das letzte Thema. Hier wird erkannt,
+// ob die neue Nachricht wirklich daran anknüpft.
+const TOPIC_STOP = new Set(('ich du er sie es wir ihr mir mich dir dich uns euch sich mein meine meinem meinen meiner dein deine '
+  + 'der die das den dem des ein eine einen einem einer und oder aber auch noch schon nur sehr mehr mal bitte doch einfach '
+  + 'ist sind war waren bin bist hat habe hast haben hatte kann kannst könnte konnte soll sollte will willst möchte würde wird werden '
+  + 'was wie wer wo wann warum welche welcher welches wieso weshalb nicht kein keine nichts alles alle viel viele etwas '
+  + 'mit von zu zum zur im in am an auf aus bei für über unter um nach vor durch gegen ohne bis seit '
+  + 'weiß weiss gibt geht machen mache macht mach gut gute guten okay hey hallo danke super cool genau also halt so dann jetzt heute '
+  + 'idee ideen frage fragen tipp tipps sagen sag zeig zeige erklär erkläre').split(' '));
+
+function topicTerms(text) {
+  return [...new Set(String(text || '').toLowerCase()
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 3 && !TOPIC_STOP.has(w)))];
+}
+
+const overlaps = (a, b) => a.some((x) => b.some((y) => x === y || (x.length > 5 && y.length > 5 && x.slice(0, 5) === y.slice(0, 5))));
+// "das"/"dies" nur als Verweis ("merk dir das", "erklär das genauer"), nicht als Artikel ("das Wetter")
+const PRONOUN_REF = /\b(das|dies|dieses|es)\b\s*(?=$|[?.!,]|noch|nochmal|genauer|bitte|auch|mal|für|in|als|zu|an|ab|um)/i;
+const BACKREF = /\b(diese|diesen|dazu|davon|darüber|damit|dafür|daran|darin|daraus|dabei|ihn|ihm|oben|vorhin|eben|vorher|deine antwort|dein code|der code|weiter|nochmal|noch mal|genauer|mehr dazu|beispiel|beispiele|zusammen|fass|übersetz|korrigier|verbesser|änder)\b/i;
+
+// 'same' = gleiches Thema, 'new' = neues Thema, 'old' = zurück zu einem früheren Thema
+export function topicShift(text, windowTexts, olderTexts) {
+  if (!windowTexts.length) return 'same';
+  const terms = topicTerms(text);
+  if (terms.length < 2 || String(text).length < 20) return 'same'; // kurze Rückfrage wie "und auf Englisch?"
+  if (overlaps(terms, topicTerms(windowTexts.join(' ')))) return 'same';
+  if (olderTexts.length && overlaps(terms, topicTerms(olderTexts.join(' ')))) return 'old';
+  if (BACKREF.test(text) || PRONOUN_REF.test(text)) return 'same'; // "erklär das genauer", "merk dir das"
+  return 'new';
+}
+
+// Unsichtbare Zusatz-Hinweise je nach Absicht (wirken bei kleinen Modellen besser als lange Regeln)
+export function intentHints(text, { newTopic = false } = {}) {
+  const t = String(text || '');
+  const hints = [];
+  if (newTopic) hints.push('Das ist eine NEUE, eigenständige Frage. Beantworte sie allgemein und für sich – beziehe sie NICHT auf vorherige Themen.');
+  if (/\b(merk|merke|merken|behalt|vergiss nicht|speicher dir|notier dir)\b/i.test(t)) {
+    hints.push('Der Nutzer möchte, dass du dir etwas merkst: Schreibe einen ```merken```-Block mit 1–3 kurzen Sätzen (das Wichtigste, worauf er sich bezieht) und bestätige in einem Satz. Wiederhole NICHT deine vorige Antwort.');
+  }
+  return hints.length ? `\n\n(${hints.join(' ')})` : '';
+}
+
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
   return /(führ|ausführ|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));

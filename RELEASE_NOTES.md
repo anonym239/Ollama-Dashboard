@@ -13,6 +13,11 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.5.1
+
+- **Erkennt Themenwechsel**: Stellst du eine neue Frage, die nichts mit dem bisherigen Gespräch zu tun hat, bezieht die KI sie nicht mehr auf das alte Thema. Nur das aktuelle Thema geht an die KI, und im Chat erscheint ein dezenter Trenner „Neues Thema“. Kommst du auf ein früheres Thema zurück, wird der ganze Chat wieder genutzt. Kurze Rückfragen wie „erklär das genauer“ bleiben im Zusammenhang.
+- **„Merk dir das“** funktioniert zuverlässiger: Die KI speichert die wichtigsten Punkte, statt ihre Antwort zu wiederholen.
+
 ### Neu in 1.5
 
 - **Code-Vorschau rechts**: Programmiert die KI eine Webseite oder ein Spiel, erscheint rechts eine **Live-Vorschau**, schon während sie schreibt. Die Breite lässt sich mit der Maus ziehen, dazu gibt es die Reiter Vorschau und Code, Neu laden, In neuem Tab öffnen und Kopieren. CSS- und JS-Dateien aus dem Chat werden automatisch eingebunden.

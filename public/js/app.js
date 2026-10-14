@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { local, localFs, web, skillsApi } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -681,7 +681,7 @@ const fileChip = (f) => `<div class="file-chip"><div class="fc-icon">${icon('fil
 
 function messageHtml(m, i, chat, isLastAi) {
   if (m.role === 'user') {
-    return `<div class="msg user" id="m-${m.id}" data-id="${m.id}"><div class="msg-col">${attachmentsHtml(m)}
+    return `${m.topicStart ? '<div class="topic-sep"><span>Neues Thema</span></div>' : ''}<div class="msg user" id="m-${m.id}" data-id="${m.id}"><div class="msg-col">${attachmentsHtml(m)}
       ${m.content ? `<div class="bubble">${escapeHtml(m.content)}</div>` : ''}
       <div class="msg-actions">
         <button class="icon-btn" data-action="copy" title="Kopieren">${icon('copy')}</button>
@@ -1226,7 +1226,14 @@ async function send() {
   }
   const images = pending.filter((p) => p.kind === 'image');
   const files = pending.filter((p) => p.kind === 'text').map(({ kind, name, size, text: t, truncated }) => ({ kind, name, size, text: t, truncated }));
-  chat.messages.push({ id: uid(), role: 'user', content: text, images: images.map((p) => p.base64), files, createdAt: Date.now() });
+  const userMsg = { id: uid(), role: 'user', content: text, images: images.map((p) => p.base64), files, createdAt: Date.now() };
+  // Themenwechsel? (bestimmt, wie viel vom bisherigen Chat die KI zu sehen bekommt)
+  const { windowMsgs, olderMsgs } = topicWindow(chat.messages);
+  const textOf = (ms) => ms.filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content).slice(-6).map((m) => splitThink(m.content).text);
+  const shift = text && !images.length && !files.length ? topicShift(text, textOf(windowMsgs), textOf(olderMsgs)) : 'same';
+  if (shift === 'new') userMsg.topicStart = true;
+  if (shift === 'old') userMsg.fullContext = true;
+  chat.messages.push(userMsg);
   if (chat.title === 'Neuer Chat') chat.title = (text || files[0]?.name || 'Bild').replace(/\s+/g, ' ').slice(0, 48);
   chat.updatedAt = Date.now();
   pending = [];
@@ -1245,6 +1252,18 @@ function stop() {
 }
 
 const INFO_TOOLS = new Set(['web_search', 'fetch_webpage', 'run_command', 'read_file', 'list_directory', 'list_models', 'running_models']);
+
+// Ab welcher Nachricht gehört der Chat zum aktuellen Thema?
+function topicWindow(messages) {
+  let start = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'user') continue;
+    if (m.fullContext) { start = 0; break; }
+    if (m.topicStart) { start = i; break; }
+  }
+  return { windowMsgs: messages.slice(start), olderMsgs: messages.slice(0, start), start };
+}
 
 async function generate(chat) {
   if (busy) return;
@@ -1315,7 +1334,9 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
-  for (const m of chat.messages) {
+  // Bei neuem Thema nur das aktuelle Thema schicken – sonst vermischt die KI alles
+  const { windowMsgs } = topicWindow(chat.messages);
+  for (const m of windowMsgs) {
     if (m.role === 'user') {
       const o = { role: 'user', content: buildContent(m.content, m.files) || '(Bild)' };
       if (m.images?.length) { if (vision) o.images = m.images; else droppedImages = true; }
@@ -1342,7 +1363,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       const reminder = translate
         ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
         : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
-      messages[k] = { ...messages[k], content: messages[k].content + reminder };
+      messages[k] = { ...messages[k], content: messages[k].content + intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart }) + reminder };
       break;
     }
   }
