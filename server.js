@@ -468,40 +468,119 @@ function htmlToText(html) {
   return { title: stripTags(title), text: body };
 }
 
-async function fetchPage(url, maxChars = 8000) {
+// ---------- Relevanz: passende Treffer und passende Textstellen finden ----------
+const STOPWORDS = new Set(('der die das den dem des ein eine einer eines einem einen und oder aber nicht kein keine ist sind war waren wird werden '
+  + 'wie was wer wo wann warum welche welcher welches mit von zu zum zur im in am an auf aus bei für fur über uber unter um nach vor '
+  + 'auch noch schon sehr mehr bitte mal gibt gib es ich du er sie wir ihr mir mich dir dich sich man kann können konnen soll sollte '
+  + 'hat hatte haben habe neue neuen neueste neuesten neu aktuell aktuelle aktuellen heute jetzt etwas alles alle zeige zeig suche such finde erkläre erklär '
+  + 'the a an and or of to in on for with what how why who is are was were new latest best about from by').split(' '));
+
+function keyTerms(query) {
+  return [...new Set(String(query).toLowerCase().split(/[^\p{L}\p{N}+#.]+/u)
+    .map((w) => w.replace(/^\.+|\.+$/g, ''))
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w)))];
+}
+
+// Wichtigste Begriffe: Namen/Produkte (Großschreibung mitten im Satz, Ziffern, unbekannte Wörter)
+function anchorTerms(query, terms) {
+  const caps = String(query).split(/\s+/).slice(1).filter((w) => /^[A-ZÄÖÜ]/.test(w)).map((w) => w.toLowerCase().replace(/[^\p{L}\p{N}+#.]/gu, ''));
+  const anchors = terms.filter((t) => caps.includes(t) || /\d/.test(t) || !/(ung|heit|keit|ion|en|er|ern|lich|isch)$/.test(t));
+  return anchors.length ? anchors : terms;
+}
+
+function scoreResult(r, terms, anchors) {
+  if (!terms.length) return 1;
+  const hay = `${r.title} ${r.snippet} ${r.url}`.toLowerCase();
+  let host = '';
+  try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch { /* egal */ }
+  const hits = terms.filter((t) => hay.includes(t)).length / terms.length;
+  const anchorHit = anchors.some((t) => hay.includes(t)) ? 0.5 : 0;
+  const official = anchors.some((t) => t.length > 2 && host.split('.').some((part) => part === t || part.startsWith(t))) ? 1 : 0;
+  return hits + anchorHit + official;
+}
+
+// Aus einem langen Seitentext die Absätze holen, die zur Frage passen
+function bestPassages(text, terms, budget = 1800) {
+  const paras = String(text).split(/\n+/).map((p) => p.trim()).filter((p) => p.length > 30);
+  const chunks = [];
+  let cur = '';
+  for (const p of paras) {
+    if ((cur + ' ' + p).length > 450 && cur) { chunks.push(cur); cur = p; } else cur = cur ? `${cur} ${p}` : p;
+  }
+  if (cur) chunks.push(cur);
+  if (!chunks.length) return String(text).slice(0, budget);
+  const scored = chunks.map((c, i) => {
+    const low = c.toLowerCase();
+    let score = 0;
+    for (const t of terms) score += Math.min(3, low.split(t).length - 1);
+    if (/\b(19|20)\d{2}\b|\bv?\d+\.\d+/.test(c)) score += 0.5; // Daten/Versionen sind oft wichtig
+    return { c, i, score };
+  });
+  const picked = [];
+  let used = 0;
+  for (const x of [...scored].sort((a, b) => b.score - a.score || a.i - b.i)) {
+    if (used + x.c.length > budget) continue;
+    if (x.score === 0 && picked.length) break;
+    picked.push(x);
+    used += x.c.length;
+  }
+  if (!picked.length) return chunks[0].slice(0, budget);
+  return picked.sort((a, b) => a.i - b.i).map((x) => x.c).join('\n…\n');
+}
+
+async function fetchPage(url, maxChars = 8000, query = '') {
   let u;
   try { u = new URL(url); } catch { throw new Error('Ungültige URL'); }
   if (!/^https?:$/.test(u.protocol)) throw new Error('Nur http/https erlaubt');
   if (isPrivateHost(u.hostname)) throw new Error('Lokale Adressen sind gesperrt');
-  const { text, url: finalUrl } = await fetchText(u.href, { timeout: 12_000 });
+  const { text, url: finalUrl } = await fetchText(u.href, { timeout: 10_000 });
   const page = htmlToText(text);
-  return { url: finalUrl, title: page.title, text: page.text.slice(0, maxChars), truncated: page.text.length > maxChars };
+  const terms = keyTerms(query);
+  const body = terms.length ? bestPassages(page.text, terms, maxChars) : page.text.slice(0, maxChars);
+  return { url: finalUrl, title: page.title, text: body, truncated: page.text.length > body.length };
 }
 
-async function webSearch(query, { pages = 3, engine: preferred = 'google', keys = {} } = {}) {
-  // Gewählter Anbieter zuerst, bei Problemen automatisch die kostenlosen ohne Key
+async function webSearch(query, { pages = 4, engine: preferred = 'google', keys = {} } = {}) {
+  const terms = keyTerms(query);
+  const anchors = anchorTerms(query, terms);
+  // Gewählter Anbieter zuerst; passen die Treffer nicht, werden weitere Anbieter dazugenommen
   const order = [preferred, 'google', 'duckduckgo', 'bing', 'brave'].filter((e, i, a) => ENGINES[e] && a.indexOf(e) === i);
+  const seen = new Set();
   let results = [];
-  let engine = '';
+  const engines = [];
   const errors = [];
   for (const key of order) {
     const [label, search] = ENGINES[key];
     try {
-      results = await search(query, keys);
-      if (results.length) { engine = label; break; }
-      errors.push(`${label}: keine Treffer`);
+      const found = (await search(query, keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors) }));
+      const good = found.filter((r) => r.score >= 0.75 && !seen.has(r.url));
+      good.forEach((r) => seen.add(r.url));
+      if (good.length) { results.push(...good); engines.push(label); }
+      else errors.push(`${label}: keine passenden Treffer`);
     } catch (e) {
       errors.push(`${label}: ${e.message}`);
     }
+    if (results.length >= 5 || engines.length >= 2) break;
   }
-  if (!results.length) throw new Error('Websuche fehlgeschlagen – besteht eine Internetverbindung? (' + errors.join('; ') + ')');
-  // Die besten Treffer direkt lesen, damit die KI echte Inhalte bekommt
-  const top = results.slice(0, pages);
-  await Promise.all(top.map(async (r) => {
-    if (r.content && r.content.length > 800) return;
-    try { r.content = (await fetchPage(r.url, 3000)).text; } catch { /* nur Snippet */ }
+  // Notfalls nur mit den wichtigsten Begriffen erneut suchen
+  if (!results.length && anchors.length && anchors.join(' ') !== query.toLowerCase()) {
+    for (const key of order.slice(0, 2)) {
+      try {
+        const found = (await ENGINES[key][1](anchors.join(' '), keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors) }));
+        results = found.filter((r) => r.score >= 0.5);
+        if (results.length) { engines.push(ENGINES[key][0]); break; }
+      } catch { /* weiter */ }
+    }
+  }
+  if (!results.length) throw new Error('Keine passenden Treffer gefunden – besteht eine Internetverbindung? (' + errors.join('; ') + ')');
+  results.sort((a, b) => b.score - a.score);
+  results = results.slice(0, 8);
+  // Die besten Seiten wirklich öffnen und die passenden Textstellen herausholen
+  await Promise.all(results.slice(0, pages).map(async (r) => {
+    if (r.content && r.content.length > 800) { r.content = bestPassages(r.content, terms, 1800); return; }
+    try { r.content = (await fetchPage(r.url, 1800, query)).text; } catch { /* nur Snippet */ }
   }));
-  return { query, engine, results };
+  return { query, engine: engines.join(' + '), results };
 }
 
 // ---------- Befehle für Windows reparieren ----------
@@ -510,6 +589,10 @@ async function webSearch(query, { pages = 3, engine: preferred = 'google', keys 
 function fixWindowsCommand(cmd, desk, home) {
   const q = (p) => (/\s/.test(p) ? `"${p}"` : p);
   let s = String(cmd);
+  // "Öffne ein CMD" – das KI-Terminal ist schon offen, kein zweites Fenster
+  if (/^\s*(start\s+(""\s+)?)?(cmd|cmd\.exe|powershell|powershell\.exe|pwsh|wt)(\s+\/[kc])?\s*$/i.test(s)) {
+    return 'echo Das KI-Terminal ist schon offen - Befehle laufen direkt hier.';
+  }
   // Linux-Befehle, die kleine Modelle gern schreiben, in cmd-Befehle übersetzen
   const seg = '(^|&&|\\|\\||&|\\|)(\\s*)';
   const tr = (re, fn) => { s = s.replace(new RegExp(seg + re, 'gi'), (m, a, b, ...rest) => a + b + fn(...rest)); };
@@ -539,6 +622,8 @@ function fixWindowsCommand(cmd, desk, home) {
   }
   // Laufwerkswechsel braucht cd /d
   s = s.replace(/\b(cd|chdir)\s+(?!\/d)(?=["']?[A-Za-z]:)/gi, 'cd /d ');
+  // start-Befehle von der Ausgabe abkoppeln – sonst wartet das Terminal, bis das gestartete Fenster zu ist
+  s = s.replace(/(^|&&|&|\|\|)(\s*start\b[^&|>]*?)(\s*)(?=&&|&|\|\||$)/gi, (m, a, c, sp) => `${a}${c} >nul 2>&1${sp}`);
   // mkdir soll bei vorhandenem Ordner nicht scheitern
   s = s.replace(/\b(mkdir|md)\s+("[^"]+"|[^\s&|]+)(?=\s*($|&|\|))/gi, (m, c, p) => `if not exist ${p} ${c} ${p}`);
   return s;
@@ -597,7 +682,7 @@ while ($true) {
     $out = Join-Path $QueueDir "$id.out"
     Show-Front
     Write-Host "$cwd>" -NoNewline -ForegroundColor Green
-    $delay = [Math]::Max(4, [Math]::Min(35, [int](1600 / [Math]::Max(1, $text.Length))))
+    $delay = [Math]::Max(2, [Math]::Min(18, [int](600 / [Math]::Max(1, $text.Length))))
     foreach ($ch in $text.ToCharArray()) { Write-Host $ch -NoNewline; Start-Sleep -Milliseconds $delay }
     Write-Host ''
     [System.IO.File]::WriteAllText($out, '')
@@ -627,7 +712,7 @@ while true; do
     id=$(basename "$job" .sh)
     cmd=$(cat "$Q/$id.txt" 2>/dev/null)
     printf '\033[32m%s $\033[0m ' "$CWD"
-    for ((i=0; i<${"$"}{#cmd}; i++)); do printf '%s' "${"$"}{cmd:$i:1}"; sleep 0.012; done; echo
+    for ((i=0; i<${"$"}{#cmd}; i++)); do printf '%s' "${"$"}{cmd:$i:1}"; sleep 0.005; done; echo
     bash "$job" 2>&1 | tee "$Q/$id.out"
     code=${"$"}{PIPESTATUS[0]}
     [ -f "$Q/$id.cwd" ] && CWD=$(cat "$Q/$id.cwd")
@@ -693,7 +778,7 @@ async function openTerminal() {
 
 const readText = (f) => { try { return fs.readFileSync(f, 'utf8').replace(/^﻿/, ''); } catch { return ''; } };
 
-async function terminalRun(original, { timeout = 300_000 } = {}) {
+async function terminalRun(original, { timeout = 120_000 } = {}) {
   if (!(await openTerminal())) return null;
   if (!termCwd) termCwd = await desktopDir(); // Fenster lief schon vor dem App-Start
   const command = await prepareCommand(original);
@@ -725,7 +810,7 @@ async function terminalRun(original, { timeout = 300_000 } = {}) {
     }
     if (!termAlive()) return { code: -1, stdout: readText(`${base}.out`), stderr: 'Das Terminal-Fenster wurde geschlossen.', visible: true, command };
   }
-  return { code: 0, stdout: readText(`${base}.out`) + '\n[Läuft im Terminal-Fenster weiter …]', stderr: '', visible: true, command, running: true };
+  return { code: 0, stdout: readText(`${base}.out`) + '\n[Der Befehl läuft im Terminal-Fenster weiter (z. B. ein Server oder ein offenes Programm). Bisherige Ausgabe siehe oben.]', stderr: '', visible: true, command, running: true };
 }
 
 async function handleLocal(req, res) {
@@ -770,7 +855,7 @@ async function handleLocal(req, res) {
       const body = await readBody(req);
       const command = String(body.command || '').trim();
       if (!command) return json(res, 400, { error: 'Kein Befehl angegeben' });
-      const timeout = Math.min(Math.max(Number(body.timeout) || 300, 1), 3600) * 1000;
+      const timeout = Math.min(Math.max(Number(body.timeout) || 120, 1), 3600) * 1000;
       const r = await terminalRun(command, { timeout });
       if (r) return json(res, 200, r);
       // Kein sichtbares Terminal möglich (z. B. ohne Bildschirm) -> unsichtbar ausführen
@@ -784,11 +869,11 @@ async function handleLocal(req, res) {
     if (route === '/local/web/search' && req.method === 'POST') {
       const body = await readBody(req);
       if (!String(body.query || '').trim()) return json(res, 400, { error: 'Keine Suchanfrage' });
-      return json(res, 200, await webSearch(String(body.query).trim(), { pages: body.pages ?? 3, engine: body.engine, keys: body.keys || {} }));
+      return json(res, 200, await webSearch(String(body.query).trim(), { pages: body.pages ?? 4, engine: body.engine, keys: body.keys || {} }));
     }
     if (route === '/local/web/fetch' && req.method === 'POST') {
       const body = await readBody(req);
-      return json(res, 200, await fetchPage(String(body.url || ''), 12_000));
+      return json(res, 200, await fetchPage(String(body.url || ''), body.query ? 6000 : 12_000, String(body.query || '')));
     }
     const fsRoute = route.match(/^\/local\/fs\/(\w+)$/);
     if (fsRoute && req.method === 'POST') {
@@ -835,7 +920,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
+module.exports = { keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

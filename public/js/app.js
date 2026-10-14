@@ -65,6 +65,7 @@ const DEFAULT_SETTINGS = {
   searchKeys: { googleKey: '', googleCx: '', tavilyKey: '', searxngUrl: 'http://127.0.0.1:8080' },
   lastModel: '',
   lastAssistantId: 'default',
+  memory: [],
   sidebarHidden: false,
   tts: { auto: false, voiceURI: '', rate: 1, pitch: 1 },
 };
@@ -110,6 +111,7 @@ const COLORS = ['#7c5cff', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899'
 let settings = loadJson('od.settings', DEFAULT_SETTINGS);
 settings.tts = { ...DEFAULT_SETTINGS.tts, ...settings.tts };
 settings.searchKeys = { ...DEFAULT_SETTINGS.searchKeys, ...settings.searchKeys };
+if (!Array.isArray(settings.memory)) settings.memory = [];
 let assistants = loadList('od.assistants', DEFAULT_ASSISTANTS);
 if (!assistants.length) assistants = structuredClone(DEFAULT_ASSISTANTS);
 
@@ -303,7 +305,7 @@ async function getCaps(model) {
 function renderStatus() {
   el.status.className = `status ${online ? 'online' : 'offline'}`;
   $('.status-text', el.status).textContent = online
-    ? `Ollama ${ollamaVersion ? 'v' + ollamaVersion : ''} · ${models.length} ${models.length === 1 ? 'Modell' : 'Modelle'}`
+    ? `Ollama ${ollamaVersion ? 'v' + ollamaVersion : ''} · ${models.length} ${models.length === 1 ? 'Modell' : 'Modelle'}${sessionTokens ? ` · ${fmtTokens(sessionTokens)} Tokens` : ''}`
     : 'Ollama nicht verbunden';
 }
 
@@ -686,7 +688,7 @@ function messageHtml(m, i, chat, isLastAi) {
   const sources = collectSources(chat, i);
   return `<div class="msg ai ${isLastAi ? 'last' : ''}" id="m-${m.id}" data-id="${m.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main">
-      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span></div>
+      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
       ${streaming ? '' : `<div class="msg-actions">
@@ -700,21 +702,26 @@ function messageHtml(m, i, chat, isLastAi) {
 
 function bodyHtml(text, streaming, m) {
   if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
-  if (streaming && !text.trim()) return '<div class="typing"><span></span><span></span><span></span></div>';
+  if (streaming && !text.trim()) return thinkIndicator(m.thinking ? 'Denkt nach' : 'Überlegt');
   let html = renderMarkdown(text);
   if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
   return streaming ? html.replace(/(<\/p>|<\/li>)(?![\s\S]*(<\/p>|<\/li>))/, '<span class="cursor"></span>$1') : html;
 }
 
+function thinkIndicator(label) {
+  return `<div class="think-ind"><span class="ti-orb">${LOGO}</span><span class="ti-label">${label}</span><span class="ti-meta" data-ti></span></div>`;
+}
+
 function thinkingHtml(thinking, active) {
   if (!thinking) return '';
-  return `<details class="thinking"${active ? ' open' : ''}><summary>${active ? 'Denkt nach …' : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
+  return `<details class="thinking"${active ? ' open' : ''}><summary>${active ? '<span class="ti-label">Denkt nach</span>' : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
 }
 
 function statsText(s) {
   const parts = [];
   if (s.eval_count && s.eval_duration) parts.push(`${(s.eval_count / (s.eval_duration / 1e9)).toFixed(1)} Token/s`);
   if (s.total_duration) parts.push(`${(s.total_duration / 1e9).toFixed(1)} s`);
+  if (s.prompt_eval_count || s.eval_count) parts.push(`${fmtTokens((s.prompt_eval_count || 0) + (s.eval_count || 0))} Tokens`);
   return parts.join(' · ');
 }
 
@@ -742,6 +749,11 @@ const STATUS_TEXT = { pending: 'Wartet auf Erlaubnis', running: 'Läuft …', do
 function toolHtml(t) {
   const meta = TOOL_META[t.name] || { icon: 'zap', label: () => t.name };
   // Websuche läuft dezent im Hintergrund – nur eine kleine Zeile
+  if (t.name === 'search_chats' || t.name === 'remember') {
+    const running = t.status === 'running';
+    const label = t.name === 'remember' ? `Gemerkt: ${escapeHtml(t.args?.fact || '')}` : `In früheren Chats nachgesehen${t.hits != null ? ` · ${t.hits} ${t.hits === 1 ? 'Stelle' : 'Stellen'}` : ''}`;
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : t.name === 'remember' ? 'save' : 'search')} ${running ? 'Erinnere mich …' : label}</span></div>`;
+  }
   if (t.name === 'web_search' || t.name === 'fetch_webpage') {
     const running = t.status === 'running';
     const label = t.name === 'web_search' ? `Im Web recherchiert: „${escapeHtml(t.args?.query || '')}“` : `Webseite gelesen`;
@@ -812,7 +824,7 @@ function scheduleStreamRender(m) {
       body.insertAdjacentHTML('afterbegin', thinkingHtml(thinking, !text));
     } else if (det) {
       det.querySelector('.think-body').textContent = thinking;
-      det.querySelector('summary').textContent = text ? 'Gedankengang anzeigen' : 'Denkt nach …';
+      det.querySelector('summary').innerHTML = text ? 'Gedankengang anzeigen' : '<span class="ti-label">Denkt nach</span>';
       if (text && det.dataset.auto !== 'done') { det.open = false; det.dataset.auto = 'done'; }
     }
     node.querySelector('.md').innerHTML = bodyHtml(text, true, m);
@@ -1093,6 +1105,12 @@ async function generate(chat) {
   // Merkt sich, was in dieser Antwort schon ausgeführt wurde (Schutz vor Endlosschleifen)
   const turn = { done: new Set() };
   try {
+    const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+    if (lastUser?.content && MEMORY_INTENT.test(lastUser.content) && chats.length > 1) {
+      const act = { name: 'search_chats', args: { query: lastUser.content } };
+      turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
+      await runAction(chat, act, controller.signal);
+    }
     for (let round = 0; round < 6; round++) {
       const again = await generateRound(chat, controller.signal, turn);
       if (!again || controller.signal.aborted) break;
@@ -1121,18 +1139,19 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const caps = await getCaps(model);
   const agentOn = settings.agent && assistant.agent !== false;
   const webOn = settings.webSearch;
-  const wantsTools = agentOn || webOn;
+  const wantsTools = true; // Gedächtnis-Werkzeuge gibt es immer
   const useTools = wantsTools && !noTools.has(model) && (!caps || caps.includes('tools'));
   const tools = !useTools ? null : TOOL_DEFS.filter((t) => {
     const n = t.function.name;
     if (n === 'web_search' || n === 'fetch_webpage') return webOn;
+    if (n === 'search_chats' || n === 'remember') return true;
     return agentOn;
   });
 
   if (!sysInfo && agentOn) sysInfo = await localFs.info().catch(() => null);
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   const intent = wantsExecution(lastUser?.content);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model }) }];
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat) }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
   for (const m of chat.messages) {
@@ -1149,6 +1168,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     } else if (m.role === 'tool') {
       const content = m.output || STATUS_TEXT[m.status] || '';
       if (useTools && m.native) messages.push({ role: 'tool', content, tool_name: m.name });
+      else if (m.name === 'search_chats' || m.name === 'web_search') messages.push({ role: 'user', content: `[${m.name === 'web_search' ? 'Ergebnis der Websuche' : 'Erinnerungen aus früheren Chats'}]\n${content}` });
       else {
         messages.push({ role: 'user', content: `[Echtes Ergebnis der Aktion „${(TOOL_META[m.name]?.label(m.args || {})) || m.name}“]\n${content}\n\n(Diese Aktion ist erledigt – wiederhole sie NICHT. Antworte dem Nutzer jetzt mit dem echten Ergebnis oder mache einen neuen, anderen Schritt.)` });
       }
@@ -1164,7 +1184,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   busy.msgId = msg.id;
   if (currentChatId === chat.id) { renderMessages(); scrollToBottom(true); }
 
-  const body = { model, messages, options: { temperature: Number(assistant.temperature ?? 0.7) } };
+  const body = { model, messages, keep_alive: '30m', options: { temperature: Number(assistant.temperature ?? 0.7) } };
   if (Number(assistant.numCtx) > 0) body.options.num_ctx = Number(assistant.numCtx);
   if (tools) body.tools = tools;
   if (settings.think && caps?.includes('thinking') && !noThink.has(model)) body.think = true;
@@ -1181,8 +1201,13 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     for await (const ev of ollama.chat(body, roundCtrl.signal)) {
       if (ev.message?.content) msg.content += ev.message.content;
       if (ev.message?.thinking) msg.thinking += ev.message.thinking;
+      if (ev.message?.content || ev.message?.thinking) msg.liveTokens = (msg.liveTokens || 0) + 1;
       if (ev.message?.tool_calls?.length) toolCalls.push(...ev.message.tool_calls);
-      if (ev.done) msg.stats = { eval_count: ev.eval_count, eval_duration: ev.eval_duration, total_duration: ev.total_duration };
+      if (ev.done) {
+        msg.stats = { eval_count: ev.eval_count, eval_duration: ev.eval_duration, total_duration: ev.total_duration, prompt_eval_count: ev.prompt_eval_count };
+        countTokens(chat, (ev.prompt_eval_count || 0) + (ev.eval_count || 0));
+        msg.liveTokens = 0;
+      }
       if (!toolCalls.length && (agentOn || webOn)) {
         const { text } = splitThink(msg.content);
         const end = findStopBlock(text, { agent: agentOn, webSearch: webOn, intent });
@@ -1296,12 +1321,14 @@ async function runAction(chat, act, signal) {
       searchEngine: settings.searchEngine,
       searchKeys: settings.searchKeys,
       visibleTerminal: settings.visibleTerminal,
+      memory: { search: (q) => memory.search(q, { skip: [...chat.messages].reverse().find((m) => m.role === 'user') }), remember: (f) => memory.remember(f) },
+      question: [...chat.messages].reverse().find((m) => m.role === 'user')?.content || '',
       progress: (text, pct) => {
         t.progress = { text, pct };
         if (Date.now() - lastShow > 200) { lastShow = Date.now(); show(); }
       },
     });
-    Object.assign(t, { status: 'done', output: r.output, display: r.display, sources: r.sources, path: r.path, failedRun: !!r.failed });
+    Object.assign(t, { status: 'done', output: r.output, display: r.display, sources: r.sources, path: r.path, failedRun: !!r.failed, hits: r.hits });
     if (r.modelsChanged) refreshModels();
   } catch (err) {
     t.status = signal.aborted ? 'cancelled' : 'error';
@@ -1312,6 +1339,13 @@ async function runAction(chat, act, signal) {
   show();
   persist(chat);
   return t.status === 'done';
+}
+
+function countTokens(chat, n) {
+  if (!n) return;
+  chat.usage = (chat.usage || 0) + n;
+  sessionTokens += n;
+  renderStatus();
 }
 
 async function makeTitle(chat) {
@@ -1325,10 +1359,13 @@ async function makeTitle(chat) {
         { role: 'user', content: `Titel für diese Nachricht:\n\n${first.content.slice(0, 600)}` },
       ],
       think: false,
-      options: { temperature: 0.3, num_predict: 30 },
+      keep_alive: '30m',
+      // gleiche Kontextgröße wie im Chat, sonst lädt Ollama das Modell neu (langsam!)
+      options: { temperature: 0.3, num_predict: 30, ...(Number(getAssistant(chat.assistantId).numCtx) > 0 ? { num_ctx: Number(getAssistant(chat.assistantId).numCtx) } : {}) },
     }).catch(async (e) => {
       if (/think/i.test(e.message)) {
-        return ollama.chatOnce({ model: chat.model, messages: [{ role: 'user', content: `Gib nur einen kurzen Titel (2-5 Wörter) für: ${first.content.slice(0, 600)}` }], options: { num_predict: 30 } });
+        const ctx = Number(getAssistant(chat.assistantId).numCtx);
+        return ollama.chatOnce({ model: chat.model, keep_alive: '30m', messages: [{ role: 'user', content: `Gib nur einen kurzen Titel (2-5 Wörter) für: ${first.content.slice(0, 600)}` }], options: { num_predict: 30, ...(ctx > 0 ? { num_ctx: ctx } : {}) } });
       }
       throw e;
     });
@@ -1341,6 +1378,71 @@ async function makeTitle(chat) {
     }
   } catch { /* Titel bleibt */ }
 }
+
+// ---------------------------------------------------------------------------
+// Gedächtnis: frühere Chats durchsuchen & Infos über den Nutzer merken
+// ---------------------------------------------------------------------------
+const MEMORY_INTENT = /(erinner|weißt du noch|weisst du noch|letzte[ns]? mal|vorhin|vorher|früher|gestern|anderen chat|anderer chat|letzten chat|haben wir|hatten wir|worüber|was habe ich|was hab ich|gechattet|besprochen|gesagt hatte|unser(em)? (gespräch|chat))/i;
+const MEM_STOP = new Set('und oder aber der die das den dem des ein eine einen einer mit von zu im in am an auf aus bei für über was wie wer wo wann haben hatten habe hast hat wir ihr ich du mir mich dir dich noch mal bitte weißt weisst erinnerst erinnern gesagt gechattet besprochen chat chats anderen letzten letztes vorhin gestern früher worüber'.split(' '));
+
+const memory = {
+  search(query, { skip } = {}) {
+    const terms = String(query).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !MEM_STOP.has(w));
+    const fmtDate = (t) => new Date(t).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const hits = [];
+    for (const c of chats) {
+      for (const m of c.messages) {
+        if (m === skip || (m.role !== 'user' && m.role !== 'assistant') || !m.content) continue;
+        const text = splitThink(m.content).text.replace(/```[\s\S]*?```/g, '[Code]').replace(/\s+/g, ' ').trim();
+        const low = text.toLowerCase();
+        let score = 0;
+        let first = -1;
+        for (const t of terms) {
+          const i = low.indexOf(t);
+          if (i >= 0) { score += 1; if (first < 0 || i < first) first = i; }
+        }
+        if (!score) continue;
+        const start = Math.max(0, first - 120);
+        hits.push({ score: score + (m.role === 'user' ? 0.2 : 0) + c.updatedAt / 1e15, chat: c.title, date: fmtDate(m.createdAt || c.updatedAt), who: m.role === 'user' ? 'Nutzer' : 'KI', text: (start ? '…' : '') + text.slice(start, start + 360) + (text.length > start + 360 ? '…' : '') });
+      }
+    }
+    if (hits.length) return hits.sort((a, b) => b.score - a.score).slice(0, 6);
+    // Allgemeine Frage ("worüber haben wir gesprochen?") -> Überblick über die letzten Chats
+    return [...chats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6).map((c) => {
+      const u = c.messages.find((m) => m.role === 'user' && m !== skip);
+      return u ? { chat: c.title, date: fmtDate(c.updatedAt), who: 'Nutzer', text: u.content.replace(/\s+/g, ' ').slice(0, 240) } : null;
+    }).filter(Boolean);
+  },
+  remember(fact) {
+    if (!settings.memory.some((f) => f.toLowerCase() === fact.toLowerCase())) {
+      settings.memory.push(fact);
+      saveSettings();
+    }
+  },
+};
+
+function recentChatList(chat) {
+  return chats.filter((c) => c.id !== chat.id && c.messages.length)
+    .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6)
+    .map((c) => `- „${c.title}“ (${new Date(c.updatedAt).toLocaleDateString('de-DE')})`);
+}
+
+// ---------------------------------------------------------------------------
+// Tokens zählen (Chat & ganze Sitzung)
+// ---------------------------------------------------------------------------
+let sessionTokens = 0;
+const fmtTokens = (n) => (n >= 10000 ? `${(n / 1000).toFixed(1).replace('.', ',')}k` : n.toLocaleString('de-DE'));
+
+// Live-Anzeige (Sekunden + Tokens) neben der Denk-Animation
+setInterval(() => {
+  if (!busy) return;
+  const chat = chats.find((c) => c.id === busy.chatId);
+  const m = chat?.messages.find((x) => x.id === busy.msgId);
+  if (!m) return;
+  const secs = Math.max(0, Math.round((Date.now() - (m.createdAt || Date.now())) / 1000));
+  const text = `${secs} s · ${fmtTokens((chat.usage || 0) + (m.liveTokens || 0))} Tokens im Chat`;
+  $$('[data-ti]').forEach((e) => { e.textContent = text; });
+}, 500);
 
 // ---------------------------------------------------------------------------
 // Kopfzeilen-Schalter: Agent, Web, Vorlesen
@@ -1633,6 +1735,11 @@ function openSettings() {
         <div class="row"><input class="input grow" id="sSearchTest" placeholder="Suche testen, z. B. Wetter Berlin"><button class="btn" id="sSearchBtn">Testen</button></div>
         <div id="sSearchResult" class="hint" style="font-size:12.5px;color:var(--text-faint)"></div></div>
 
+      <div><div class="section-title">Gedächtnis</div>
+        <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Das weiß die KI dauerhaft über dich. Sie merkt sich Dinge selbst oder wenn du „Merk dir …“ sagst. Frühere Chats durchsucht sie automatisch, wenn du dich darauf beziehst.</p>
+        <div class="list" id="memList"></div>
+        <div class="row" style="margin-top:8px"><input class="input grow" id="memAdd" placeholder="z. B. Ich heiße Alex und programmiere gern in Python"><button class="btn" id="memAddBtn">Hinzufügen</button></div></div>
+
       <div><div class="section-title">Sprachausgabe</div>
         ${sw('sTts', settings.tts.auto, 'Antworten automatisch vorlesen', 'Liest schon während die KI schreibt')}
         <div class="field"><label>Stimme</label><select class="input" id="sVoice"><option value="">Automatisch (Systemsprache)</option>
@@ -1684,6 +1791,19 @@ function openSettings() {
   bind('#sVoice', (t) => { settings.tts.voiceURI = t.value; });
   bind('#sRate', (t) => { settings.tts.rate = Number(t.value); q('#sRateVal').textContent = t.value; }, 'input');
   bind('#sPitch', (t) => { settings.tts.pitch = Number(t.value); q('#sPitchVal').textContent = t.value; }, 'input');
+  const renderMem = () => {
+    q('#memList').innerHTML = settings.memory.length
+      ? settings.memory.map((f, i) => `<div class="list-item"><div class="li-main" style="font-size:14px">${escapeHtml(f)}</div><div class="li-actions"><button class="icon-btn" data-mem-del="${i}" title="Vergessen">${icon('trash')}</button></div></div>`).join('')
+      : '<div class="empty-state" style="padding:8px">Noch nichts gemerkt.</div>';
+  };
+  renderMem();
+  q('#memList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-mem-del]');
+    if (b) { settings.memory.splice(+b.dataset.memDel, 1); saveSettings(); renderMem(); }
+  });
+  const addMem = () => { const v = q('#memAdd').value.trim(); if (v) { memory.remember(v); q('#memAdd').value = ''; renderMem(); } };
+  q('#memAddBtn').onclick = addMem;
+  q('#memAdd').onkeydown = (e) => { if (e.key === 'Enter') addMem(); };
   q('#sTtsTest').onclick = () => speaker.speak('Hallo! So klinge ich, wenn ich dir deine Antworten vorlese.', 'test');
 
   q('#sTest').onclick = async () => {

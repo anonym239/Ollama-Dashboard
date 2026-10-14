@@ -13,7 +13,9 @@ const str = (description) => ({ type: 'string', description });
 
 export const TOOL_DEFS = [
   fn('web_search', 'Sucht im Internet und liefert Treffer mit Seiteninhalten. Nutze das, wenn du etwas nicht sicher weißt oder aktuelle Informationen brauchst.', { query: str('Suchbegriff') }, ['query']),
-  fn('fetch_webpage', 'Liest den Text einer Webseite.', { url: str('Vollständige URL') }, ['url']),
+  fn('fetch_webpage', 'Öffnet eine Webseite und liest die zur Frage passenden Textstellen.', { url: str('Vollständige URL'), query: str('Worum es geht (optional)') }, ['url']),
+  fn('search_chats', 'Durchsucht alle bisherigen Chats mit dem Nutzer (auch andere Chats), um sich an frühere Gespräche zu erinnern.', { query: str('Wonach gesucht wird') }, ['query']),
+  fn('remember', 'Merkt sich dauerhaft eine wichtige Info über den Nutzer (z. B. Name, Vorlieben, Projekte).', { fact: str('Die Info in einem kurzen Satz') }, ['fact']),
   fn('write_file', 'Speichert eine Datei auf dem Computer (Ordner werden automatisch angelegt). Relative Pfade landen auf dem Desktop.', { path: str('z. B. Desktop/mein-projekt/index.html'), content: str('Vollständiger Dateiinhalt') }, ['path', 'content']),
   fn('create_folder', 'Legt einen Ordner an.', { path: str('z. B. Desktop/mein-projekt') }, ['path']),
   fn('read_file', 'Liest eine Textdatei.', { path: str('Dateipfad') }, ['path']),
@@ -35,6 +37,8 @@ export const TOOL_DEFS = [
 export const TOOL_META = {
   web_search: { level: 'auto', icon: 'globe', label: (a) => `Websuche: ${a.query}` },
   fetch_webpage: { level: 'auto', icon: 'globe', label: (a) => `Webseite lesen: ${a.url}` },
+  search_chats: { level: 'auto', icon: 'search', label: (a) => `Erinnern: ${a.query}` },
+  remember: { level: 'auto', icon: 'save', label: (a) => `Merken: ${a.fact}` },
   list_models: { level: 'auto', icon: 'cpu', label: () => 'Installierte Modelle abfragen' },
   running_models: { level: 'auto', icon: 'cpu', label: () => 'Laufende Modelle abfragen' },
   load_model: { level: 'auto', icon: 'play', label: (a) => `Modell starten: ${a.name}` },
@@ -60,8 +64,9 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model }) {
-  const now = new Date().toLocaleString('de-DE', { dateStyle: 'full', timeStyle: 'short' });
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [] }) {
+  // Nur das Datum (ohne Uhrzeit): So bleibt der Prompt gleich und Ollama muss ihn nicht jedes Mal neu einlesen
+  const now = new Date().toLocaleDateString('de-DE', { dateStyle: 'full' });
   const win = sys?.platform === 'win32';
   const os = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[sys?.platform] || 'unbekannt';
   const desk = sys?.desktop || (win ? 'C:\\Users\\<Name>\\Desktop' : '~/Desktop');
@@ -69,6 +74,10 @@ export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, mo
   if (assistant?.systemPrompt?.trim()) parts.push(assistant.systemPrompt.trim());
   else parts.push(`Du bist ${assistant?.name || 'ein KI-Assistent'}, ein hilfreicher, kluger KI-Assistent.`);
   parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte in der Sprache des Nutzers, klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
+
+  if (memory.length) parts.push(`## Was du über den Nutzer weißt\n${memory.map((f) => `- ${f}`).join('\n')}`);
+  if (recentChats.length) parts.push(`## Frühere Chats mit dem Nutzer\n${recentChats.join('\n')}\nWenn der Nutzer sich auf frühere Gespräche bezieht, sieh dort nach – mit einem Block:\n\`\`\`erinnern\nSuchbegriff\n\`\`\`\nDanach aufhören, du bekommst die passenden Stellen.`);
+  parts.push('Wichtige Infos über den Nutzer (Name, Vorlieben, Projekte) kannst du dir dauerhaft merken:\n```merken\nDer Nutzer heißt Alex.\n```');
 
   if (agent) {
     parts.push(`## Handeln auf dem Computer
@@ -103,7 +112,8 @@ Suchbegriff
 \`\`\`
 ` : ''}
 WICHTIG:
-- Nach einem befehl-, ollama- oder suche-Block hörst du SOFORT auf zu schreiben. Die App führt ihn aus und gibt dir das echte Ergebnis. Erfinde NIEMALS Ausgaben oder Ergebnisse.
+- Du HAST bereits ein eigenes, sichtbares Terminal-Fenster. Öffne KEIN weiteres (kein "start cmd"). Schreibe einfach die Befehle in einen befehl-Block.
+- Nach einem befehl-, ollama-, erinnern- oder suche-Block hörst du SOFORT auf zu schreiben. Die App führt ihn aus und gibt dir das echte Ergebnis. Erfinde NIEMALS Ausgaben oder Ergebnisse.
 - Ordner und Dateien IMMER mit ordner- und datei:-Blöcken anlegen – das funktioniert zuverlässig, Terminal-Befehle dafür nicht.
 - Relative Pfade wie Desktop/projekt beziehen sich auf den Desktop des Nutzers.
 - Nutze die Blöcke nur, wenn etwas auf dem Computer passieren soll. Normale Fragen beantwortest du einfach.
@@ -132,7 +142,14 @@ Wenn der Nutzer „programmiere mir X“ sagt: lege einen Projektordner auf dem 
   } else if (webSearch) {
     parts.push('Wenn du etwas nicht sicher weißt oder es um aktuelle Dinge geht, suche im Internet – mit dem Werkzeug web_search oder mit einem Block:\n```suche\nSuchbegriff\n```\nDanach sofort aufhören, du bekommst die echten Ergebnisse. Erfinde nichts.');
   }
-  if (webSearch) parts.push('Wenn du Suchergebnisse bekommst: Formuliere eine eigene, gut verständliche Antwort daraus (nicht einfach abschreiben) und nenne am Ende kurz die wichtigsten Quellen als Links.');
+  if (webSearch) {
+    parts.push(`## Websuche
+- Suche mit kurzen, genauen Suchbegriffen. Nenne den Namen des Produkts/der Sache (z. B. "Ollama neue Funktionen Release" statt einer langen Frage). Englische Begriffe finden bei Technik-Themen oft mehr.
+- Du bekommst echte Textstellen von den gefundenen Webseiten. Lies sie genau und beantworte die Frage daraus – mit konkreten Details (Namen, Zahlen, Versionen, Daten).
+- Sag NICHT, du hättest nichts gefunden, wenn die Textstellen passende Infos enthalten.
+- Passen die Ergebnisse nicht zur Frage, suche EINMAL erneut mit besseren Begriffen (z. B. mit dem Namen der offiziellen Webseite).
+- Formuliere eine eigene, gut verständliche Antwort (nicht abschreiben) und nenne am Ende kurz die Quellen als Links.`);
+  }
   return parts.join('\n\n');
 }
 
@@ -142,7 +159,7 @@ export function wantsExecution(text) {
 }
 
 const SHELL_LANGS = new Set(['cmd', 'bat', 'batch', 'powershell', 'ps1', 'pwsh', 'bash', 'sh', 'shell', 'zsh', 'console']);
-const STOP_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama']);
+const STOP_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern']);
 
 function blockKind(info, intent) {
   const kind = info.trim().toLowerCase();
@@ -157,7 +174,7 @@ export function findStopBlock(content, { agent, webSearch, intent }) {
   while ((m = re.exec(content))) {
     const kind = blockKind(m[1], intent);
     if (!STOP_KINDS.has(kind)) continue;
-    if ((kind === 'suche' || kind === 'search') ? webSearch : agent) return m.index + m[0].length;
+    if (kind === 'erinnern' || ((kind === 'suche' || kind === 'search') ? webSearch : agent)) return m.index + m[0].length;
   }
   return -1;
 }
@@ -187,6 +204,10 @@ export function parseTextActions(content, { agent, webSearch, intent = false }) 
       actions.push({ name: 'write_file', args: { path: file[1].trim(), content: body + '\n' } });
     } else if (kind === 'suche' || kind === 'search') {
       if (webSearch && body.trim()) actions.push({ name: 'web_search', args: { query: body.trim().split('\n')[0] } });
+    } else if (kind === 'erinnern') {
+      if (body.trim()) actions.push({ name: 'search_chats', args: { query: body.trim().split('\n')[0] } });
+    } else if (kind === 'merken') {
+      body.split('\n').map((l) => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean).forEach((fact) => actions.push({ name: 'remember', args: { fact } }));
     } else if (!agent) {
       continue;
     } else if (kind === 'ordner' || kind === 'folder') {
@@ -209,21 +230,34 @@ export function parseTextActions(content, { agent, webSearch, intent = false }) 
 
 // Führt ein Werkzeug aus. ui.progress(text, pct) zeigt Fortschritt, signal bricht ab.
 // Rückgabe: { output: Text für die KI, display: Text für den Nutzer, sources? }
-export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {}, visibleTerminal = true } = {}) {
+export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {}, visibleTerminal = true, memory, question = '' } = {}) {
   switch (name) {
+    case 'search_chats': {
+      const hits = memory?.search(String(args.query || '')) || [];
+      if (!hits.length) return { output: 'In früheren Chats nichts Passendes gefunden.', display: 'Nichts gefunden', hits: 0 };
+      return {
+        output: `Passende Stellen aus früheren Chats:\n\n${hits.map((h) => `[${h.chat} – ${h.date}] ${h.who}: ${h.text}`).join('\n\n')}`,
+        display: `${hits.length} Stellen gefunden`, hits: hits.length,
+      };
+    }
+    case 'remember': {
+      const fact = String(args.fact || '').trim();
+      if (fact) memory?.remember(fact);
+      return { output: `Gemerkt: ${fact}`, display: fact };
+    }
     case 'web_search': {
       const r = await web.search(String(args.query || ''), searchEngine, searchKeys);
       if (!r.results.length) return { output: 'Keine Treffer gefunden.', display: 'Keine Treffer.' };
       const output = r.results.map((x, i) =>
-        `[${i + 1}] ${x.title}\nURL: ${x.url}\n${x.snippet}${x.content ? `\nInhalt: ${x.content}` : ''}`).join('\n\n');
+        `### Quelle ${i + 1}: ${x.title}\nURL: ${x.url}\n${x.content ? `Textstellen von der Seite:\n${x.content}` : `Kurzbeschreibung: ${x.snippet}`}`).join('\n\n');
       return {
-        output: `Suchergebnisse für „${r.query}“:\n\n${output}`,
+        output: `Websuche nach „${r.query}“ – echte Inhalte von ${r.results.length} Webseiten:\n\n${output}\n\nBeantworte jetzt die Frage des Nutzers aus diesen Textstellen (mit konkreten Details) und nenne die Quellen.`,
         display: `${r.results.length} Treffer (${r.engine})`,
         sources: r.results.slice(0, 6).map((x) => ({ title: x.title, url: x.url })),
       };
     }
     case 'fetch_webpage': {
-      const r = await web.fetch(String(args.url || ''));
+      const r = await web.fetch(String(args.url || ''), String(args.query || question || ''));
       return { output: `${r.title}\n${r.url}\n\n${r.text}`, display: r.title || r.url, sources: [{ title: r.title || r.url, url: r.url }] };
     }
     case 'write_file': {
@@ -252,7 +286,7 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       let r;
       if (visibleTerminal && !args.cwd) {
         progress('Läuft im KI-Terminal …');
-        r = await local.terminal(command, 600);
+        r = await local.terminal(command, 120);
       } else {
         progress('Läuft …');
         r = await local.exec(command, 300, args.cwd);

@@ -29,12 +29,14 @@ async function test(name, fn) {
   await test('mkdir Desktop/ordner', () => assert.strictEqual(fix('mkdir Desktop/test_folder'), `if not exist ${D}\\test_folder mkdir ${D}\\test_folder`));
   await test('echo > Desktop\\datei', () => assert.strictEqual(fix('echo hi > Desktop\\a\\b.txt'), `echo hi > ${D}\\a\\b.txt`));
   await test('cd Desktop', () => assert.strictEqual(fix('cd Desktop'), `cd /d ${D}`));
-  await test('URLs bleiben unverändert', () => assert.strictEqual(fix('start https://ollama.com/library'), 'start https://ollama.com/library'));
+  await test('URLs bleiben unverändert', () => assert.strictEqual(fix('start https://ollama.com/library'), 'start https://ollama.com/library >nul 2>&1'));
   await test('Desktop mit Leerzeichen wird gequotet', () => assert.strictEqual(fix('mkdir Desktop/x', 'C:\\Users\\A\\OneDrive - Firma\\Desktop'), 'if not exist "C:\\Users\\A\\OneDrive - Firma\\Desktop\\x" mkdir "C:\\Users\\A\\OneDrive - Firma\\Desktop\\x"'));
   await test('Schalter wie /d bleiben', () => assert.strictEqual(fix('dir /b'), 'dir /b'));
   await test('mkdir -p (Linux) wird übersetzt', () => assert.strictEqual(fix('mkdir -p Desktop/test_folder'), `if not exist ${D}\\test_folder mkdir ${D}\\test_folder`));
   await test('ls / cat / touch werden übersetzt', () => assert.strictEqual(fix('ls -la && cat a.txt && touch b.txt'), 'dir && type a.txt && type nul >> b.txt'));
   await test('rm -rf wird übersetzt', () => assert.strictEqual(fix('rm -rf alt'), 'rmdir /s /q alt'));
+  await test('start wird von der Ausgabe abgekoppelt', () => assert.strictEqual(fix('start notepad && echo ok'), 'start notepad >nul 2>&1 && echo ok'));
+  await test('"öffne ein CMD" nutzt das vorhandene KI-Terminal', () => assert.match(fix('start cmd /k'), /^echo /));
   await test('"cat" in Texten bleibt', () => assert.strictEqual(fix('echo concat category'), 'echo concat category'));
 
   console.log('\nDateizugriff');

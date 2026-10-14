@@ -33,6 +33,6 @@ export const localFs = {
 };
 
 export const web = {
-  search: (query, engine = 'google', keys = {}, pages = 3) => call('/local/web/search', { method: 'POST', body: { query, engine, keys, pages } }),
-  fetch: (url) => call('/local/web/fetch', { method: 'POST', body: { url } }),
+  search: (query, engine = 'google', keys = {}, pages = 4) => call('/local/web/search', { method: 'POST', body: { query, engine, keys, pages } }),
+  fetch: (url, query = '') => call('/local/web/fetch', { method: 'POST', body: { url, query } }),
 };

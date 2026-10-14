@@ -13,6 +13,14 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.2
+
+- **Viel bessere Websuche**: Unpassende Treffer (z. B. Nachrichtenseiten bei Technikfragen) werden aussortiert, offizielle Seiten bevorzugt und mehrere Suchmaschinen kombiniert. Die KI liest auf bis zu 4 Seiten **genau die Textstellen, die zur Frage passen**, nicht mehr nur den Seitenanfang.
+- **Gedächtnis**: Die KI sieht automatisch in früheren Chats nach, wenn du dich darauf beziehst („Erinnerst du dich …?“), und merkt sich wichtige Infos über dich dauerhaft. Du kannst sie in den Einstellungen ansehen und löschen.
+- **Schneller**: Das Modell bleibt geladen, und der Prompt wird nicht mehr jede Minute komplett neu eingelesen. Der KI-Terminal-Text wird schneller getippt.
+- **Terminal hängt nicht mehr**: `start …` blockiert nicht mehr, und „öffne ein CMD“ nutzt das vorhandene KI-Terminal.
+- **Neue Denk-Animation** mit Live-Anzeige von Sekunden und verbrauchten Tokens, dazu Tokens pro Antwort und für die ganze Sitzung.
+
 ### Neu in 1.1
 
 - **Sichtbares KI-Terminal**: Die KI öffnet ein echtes CMD-Fenster, platziert es auf deinem Bildschirm, tippt Befehle selbst ein und nutzt die echte Ausgabe.

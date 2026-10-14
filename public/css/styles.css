@@ -546,3 +546,29 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 .state-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); display: inline-block; margin-right: 2px; }
 .state-dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 .brand-logo svg { width: 20px; height: 20px; }
+
+/* ---------- Denk-Animation ---------- */
+.think-ind { display: inline-flex; align-items: center; gap: 10px; padding: 6px 0; }
+.ti-orb {
+  position: relative; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+  background: var(--grad); animation: orbPulse 1.6s ease-in-out infinite;
+}
+.ti-orb::after {
+  content: ''; position: absolute; inset: -4px; border-radius: 10px; border: 2px solid transparent;
+  background: conic-gradient(from 0deg, transparent 0 70%, rgba(124, 92, 255, .9), rgba(34, 195, 238, .9)) border-box;
+  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: spin 1.4s linear infinite;
+}
+.ti-orb svg { width: 13px; height: 13px; animation: spin 3s linear infinite; }
+.ti-label {
+  font-weight: 500; font-size: 14px;
+  background: linear-gradient(90deg, var(--text-faint) 0%, var(--text-faint) 35%, var(--text) 50%, var(--text-faint) 65%, var(--text-faint) 100%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
+.ti-meta, .live-meta { font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.live-meta:not(:empty)::before { content: '· '; }
+@keyframes orbPulse { 0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(124, 92, 255, .45); } 50% { transform: scale(1.06); box-shadow: 0 0 0 6px rgba(124, 92, 255, 0); } }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .ti-orb, .ti-orb::after, .ti-orb svg, .ti-label { animation: none; } .ti-label { color: var(--text-soft); background: none; } }
+.msg:has(.think-ind) .live-meta { display: none; }
