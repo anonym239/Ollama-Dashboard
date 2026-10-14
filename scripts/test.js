@@ -108,8 +108,9 @@ async function test(name, fn) {
       fs.mkdirSync(appDir);
       const setupFile = path.join(dir, 'Setup.cmd');
       const exe = path.join(appDir, 'App.cmd');
-      fs.writeFileSync(setupFile, `@echo %*> "${path.join(dir, 'setup-args.txt')}"\r\n`);
-      fs.writeFileSync(exe, `@echo %OD_AFTER_UPDATE%> "${path.join(dir, 'started.txt')}"\r\n`);
+      fs.writeFileSync(setupFile, `@echo args=%*> "${path.join(dir, 'setup-args.txt')}"\r\n`);
+      // Hinweis: "echo 1> datei" wäre eine Umleitung – deshalb steht ein Text davor
+      fs.writeFileSync(exe, `@echo neu=%OD_AFTER_UPDATE%> "${path.join(dir, 'started.txt')}"\r\n`);
       const dummy = spawn('cmd.exe', ['/c', 'ping -n 3 127.0.0.1 >nul'], { stdio: 'ignore' });
       const script = path.join(dir, 'update.ps1');
       fs.writeFileSync(script, '﻿' + srv.updaterScript({ setupFile, exe, pid: dummy.pid, log: path.join(dir, 'setup.log') }), 'utf8');
@@ -118,7 +119,7 @@ async function test(name, fn) {
       const args = fs.readFileSync(path.join(dir, 'setup-args.txt'), 'utf8');
       assert.match(args, /\/VERYSILENT/);
       assert.match(args, /\/LOG="/);
-      assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), '1');
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), 'neu=1');
       assert.ok(!fs.existsSync(setupFile), 'Setup wurde nicht aufgeräumt');
       fs.rmSync(dir, { recursive: true, force: true });
     });
