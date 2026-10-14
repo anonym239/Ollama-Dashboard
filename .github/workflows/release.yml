@@ -47,6 +47,10 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Selbsttest (Pfade, Dateien, KI-Terminal)
+        if: steps.v.outputs.skip != 'true'
+        run: npm test
+
       - name: Programm bauen (eigenständige .exe)
         if: steps.v.outputs.skip != 'true'
         run: npm run build

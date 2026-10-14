@@ -504,6 +504,217 @@ async function webSearch(query, { pages = 3, engine: preferred = 'google', keys 
   return { query, engine, results };
 }
 
+// ---------- Befehle für Windows reparieren ----------
+// Kleine Modelle schreiben oft "mkdir Desktop/ordner" – unter cmd ein Syntaxfehler und
+// bei OneDrive-Desktops der falsche Ort. Hier werden solche Pfade korrigiert.
+function fixWindowsCommand(cmd, desk, home) {
+  const q = (p) => (/\s/.test(p) ? `"${p}"` : p);
+  let s = String(cmd);
+  // Desktop/... und ~/... in echte Pfade umwandeln
+  const bs = (rest) => rest.replace(/\//g, '\\');
+  s = s.replace(/(^|[\s"'(=>])(?:Desktop|Schreibtisch)([\\/][^\s"'&|<>]*)/gi, (_, pre, rest) => pre + desk + bs(rest));
+  s = s.replace(/(^|[\s"'(=>])~([\\/][^\s"'&|<>]*)/g, (_, pre, rest) => pre + home + bs(rest));
+  s = s.replace(/\b(cd|chdir|pushd|mkdir|md|explorer|dir|start)(\s+(?:\/d\s+)?)(?:Desktop|Schreibtisch|~)(?=\s|$|&|\|)/gi,
+    (_, c, sp) => `${c}${sp}${q(c.toLowerCase() === 'start' ? `"" ${desk}` : desk)}`.replace(/""\s"/, '"" "'));
+  // Schrägstriche in Pfaden (nicht Schalter wie /d) -> Backslashes
+  s = s.replace(/((?<![\w:\/])[A-Za-z]:[\\/][^\s"'&|<>]*|(?<=\b(?:mkdir|md|cd|chdir|rd|rmdir|type|del|explorer|pushd)\s+(?:\/[a-z]\s+)?"?)[^\s"'&|<>\/][^\s"'&|<>]*\/[^\s"'&|<>]*)/gi,
+    (m) => (/^https?:/i.test(m) ? m : m.replace(/\//g, '\\')));
+  // Pfade mit Leerzeichen (z. B. OneDrive) in Anführungszeichen setzen
+  if (/\s/.test(desk)) {
+    const esc = desk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    s = s.replace(new RegExp(`(^|[^"\\\\])(${esc}[^\\s"&|<>]*)`, 'g'), (_, pre, p) => `${pre}"${p}"`);
+  }
+  // Laufwerkswechsel braucht cd /d
+  s = s.replace(/\b(cd|chdir)\s+(?!\/d)(?=["']?[A-Za-z]:)/gi, 'cd /d ');
+  // mkdir soll bei vorhandenem Ordner nicht scheitern
+  s = s.replace(/\b(mkdir|md)\s+("[^"]+"|[^\s&|]+)(?=\s*($|&|\|))/gi, (m, c, p) => `if not exist ${p} ${c} ${p}`);
+  return s;
+}
+
+async function prepareCommand(command) {
+  if (!IS_WIN) return command;
+  return fixWindowsCommand(command, await desktopDir(), require('os').homedir());
+}
+
+// Manche Programme melden Erfolg mit Exit-Code 1 (z. B. explorer)
+const normalizeCode = (command, code) => (/^\s*(explorer|start)\b/i.test(command) ? 0 : code);
+
+// ---------- Sichtbares KI-Terminal ----------
+// Die KI öffnet ein echtes Terminal-Fenster, tippt Befehle sichtbar ein und
+// bekommt die echte Ausgabe zurück. Kommunikation über eine Warteschlange im Temp-Ordner.
+const TERM_DIR = path.join(require('os').tmpdir(), 'ollama-dashboard-terminal');
+let termCwd = null;
+let termSeq = 0;
+
+const PS_TERMINAL = String.raw`param([string]$QueueDir, [string]$StartDir)
+$ErrorActionPreference = 'Continue'
+try { chcp 65001 > $null } catch {}
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+$Host.UI.RawUI.WindowTitle = 'KI-Terminal - Ollama Dashboard'
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class KiWin {
+  [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool r);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+}
+"@
+  $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  $w = [int]($wa.Width * 0.46); $h = [int]($wa.Height * 0.62)
+  $hwnd = [KiWin]::GetConsoleWindow()
+  if ($hwnd -ne [IntPtr]::Zero) { [void][KiWin]::MoveWindow($hwnd, $wa.Right - $w - 12, $wa.Bottom - $h - 12, $w, $h, $true) }
+} catch {}
+function Show-Front { try { $h = [KiWin]::GetConsoleWindow(); [void][KiWin]::ShowWindow($h, 9); [void][KiWin]::SetForegroundWindow($h) } catch {} }
+$cwd = $StartDir
+Write-Host ''
+Write-Host '  KI-Terminal' -ForegroundColor Magenta
+Write-Host '  Hier tippt und startet deine KI Befehle - sichtbar fuer dich.' -ForegroundColor DarkGray
+Write-Host '  Fenster schliessen ist ok, es wird bei Bedarf neu geoeffnet.' -ForegroundColor DarkGray
+Write-Host ''
+Set-Content -Path (Join-Path $QueueDir 'session.pid') -Value $PID
+while ($true) {
+  $jobs = @(Get-ChildItem -Path $QueueDir -Filter 'job-*.cmd' -ErrorAction SilentlyContinue | Sort-Object Name)
+  foreach ($job in $jobs) {
+    $id = $job.BaseName
+    $text = ''
+    try { $text = [System.IO.File]::ReadAllText((Join-Path $QueueDir "$id.txt"), [System.Text.Encoding]::UTF8) } catch {}
+    $out = Join-Path $QueueDir "$id.out"
+    Show-Front
+    Write-Host "$cwd>" -NoNewline -ForegroundColor Green
+    $delay = [Math]::Max(4, [Math]::Min(35, [int](1600 / [Math]::Max(1, $text.Length))))
+    foreach ($ch in $text.ToCharArray()) { Write-Host $ch -NoNewline; Start-Sleep -Milliseconds $delay }
+    Write-Host ''
+    [System.IO.File]::WriteAllText($out, '')
+    & cmd.exe /d /c "$($job.FullName)" 2>&1 | ForEach-Object {
+      $line = "$_"
+      Write-Host $line
+      [System.IO.File]::AppendAllText($out, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    }
+    $code = $LASTEXITCODE
+    $cwdFile = Join-Path $QueueDir "$id.cwd"
+    if (Test-Path $cwdFile) { $c = ([System.IO.File]::ReadAllText($cwdFile)).Trim(); if ($c) { $cwd = $c } }
+    Write-Host ''
+    Remove-Item $job.FullName -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText((Join-Path $QueueDir "$id.done"), "$code")
+  }
+  Start-Sleep -Milliseconds 200
+}
+`;
+
+const SH_TERMINAL = String.raw`#!/usr/bin/env bash
+Q="$1"; CWD="$2"
+printf '\033]0;KI-Terminal - Ollama Dashboard\007'
+printf '\n  \033[35mKI-Terminal\033[0m\n  \033[90mHier tippt und startet deine KI Befehle - sichtbar fuer dich.\033[0m\n\n'
+echo $$ > "$Q/session.pid"
+while true; do
+  for job in $(ls "$Q"/job-*.sh 2>/dev/null | sort); do
+    id=$(basename "$job" .sh)
+    cmd=$(cat "$Q/$id.txt" 2>/dev/null)
+    printf '\033[32m%s $\033[0m ' "$CWD"
+    for ((i=0; i<${"$"}{#cmd}; i++)); do printf '%s' "${"$"}{cmd:$i:1}"; sleep 0.012; done; echo
+    bash "$job" 2>&1 | tee "$Q/$id.out"
+    code=${"$"}{PIPESTATUS[0]}
+    [ -f "$Q/$id.cwd" ] && CWD=$(cat "$Q/$id.cwd")
+    rm -f "$job"; echo
+    echo "$code" > "$Q/$id.done"
+  done
+  sleep 0.2
+done
+`.replace(/\$\{"\$"\}/g, '$');
+
+function termAlive() {
+  try {
+    const pid = Number(fs.readFileSync(path.join(TERM_DIR, 'session.pid'), 'utf8').trim());
+    if (!pid) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findTerminalEmulator() {
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
+  for (const [bin, flag] of [['x-terminal-emulator', '-e'], ['gnome-terminal', '--'], ['konsole', '-e'], ['xfce4-terminal', '-x'], ['kitty', ''], ['alacritty', '-e'], ['xterm', '-e']]) {
+    const r = await run(`command -v ${bin}`, { timeout: 3000 });
+    if (r.code === 0 && r.stdout.trim()) return [bin, flag];
+  }
+  return null;
+}
+
+async function openTerminal() {
+  if (termAlive()) return true;
+  if (!termCwd) termCwd = await desktopDir();
+  fs.mkdirSync(TERM_DIR, { recursive: true });
+  for (const f of fs.readdirSync(TERM_DIR)) { try { fs.rmSync(path.join(TERM_DIR, f), { force: true }); } catch { /* egal */ } }
+  const q = (p) => `"${p}"`;
+  if (IS_WIN) {
+    const script = path.join(TERM_DIR, 'ki-terminal.ps1');
+    // BOM, damit Windows PowerShell 5 das Skript als UTF-8 liest
+    fs.writeFileSync(script, '﻿' + PS_TERMINAL.replace(/\r?\n/g, '\r\n'), 'utf8');
+    spawn(`start "KI-Terminal" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ${q(script)} -QueueDir ${q(TERM_DIR)} -StartDir ${q(termCwd)}`,
+      { shell: true, detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
+  } else {
+    const script = path.join(TERM_DIR, 'ki-terminal.sh');
+    fs.writeFileSync(script, SH_TERMINAL, { mode: 0o755 });
+    const args = `bash ${q(script)} ${q(TERM_DIR)} ${q(termCwd)}`;
+    if (process.platform === 'darwin') {
+      const inner = args.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      spawn('osascript', ['-e', `tell application "Terminal" to do script "${inner}"`, '-e', 'tell application "Terminal" to activate'],
+        { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
+    } else {
+      const emu = await findTerminalEmulator();
+      if (!emu) return false;
+      spawn(`${emu[0]} ${emu[1]} ${args}`, { shell: true, detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
+    }
+  }
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (termAlive()) return true;
+  }
+  return false;
+}
+
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8').replace(/^﻿/, ''); } catch { return ''; } };
+
+async function terminalRun(original, { timeout = 300_000 } = {}) {
+  if (!(await openTerminal())) return null;
+  if (!termCwd) termCwd = await desktopDir(); // Fenster lief schon vor dem App-Start
+  const command = await prepareCommand(original);
+  const id = `job-${Date.now()}-${String(++termSeq).padStart(4, '0')}`;
+  const base = path.join(TERM_DIR, id);
+  const cwdFile = `${base}.cwd`;
+  fs.writeFileSync(`${base}.txt`, command, 'utf8');
+  let script;
+  if (IS_WIN) {
+    script = ['@echo off', 'chcp 65001 >nul', `cd /d "${termCwd}"`, ...command.split(/\r?\n/), 'set "__EC=%ERRORLEVEL%"', `cd > "${cwdFile}"`, 'exit /b %__EC%'].join('\r\n') + '\r\n';
+  } else {
+    script = [`cd "${termCwd}" || exit 1`, command, '__ec=$?', `pwd > "${cwdFile}"`, 'exit $__ec'].join('\n') + '\n';
+  }
+  const ext = IS_WIN ? '.cmd' : '.sh';
+  // Erst unter anderem Namen schreiben, dann umbenennen – das Terminal liest nie halbe Dateien
+  fs.writeFileSync(`${base}.tmp`, script, 'utf8');
+  fs.renameSync(`${base}.tmp`, base + ext);
+
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (fs.existsSync(`${base}.done`)) {
+      const code = parseInt(readText(`${base}.done`).trim(), 10);
+      const out = readText(`${base}.out`);
+      const cwd = readText(cwdFile).trim();
+      if (cwd) termCwd = cwd;
+      for (const e of ['.txt', '.out', '.cwd', '.done']) { try { fs.rmSync(base + e, { force: true }); } catch { /* egal */ } }
+      return { code: normalizeCode(command, Number.isNaN(code) ? 0 : code), stdout: out.slice(0, 200_000), stderr: '', visible: true, command, cwd: termCwd, ms: Date.now() - started };
+    }
+    if (!termAlive()) return { code: -1, stdout: readText(`${base}.out`), stderr: 'Das Terminal-Fenster wurde geschlossen.', visible: true, command };
+  }
+  return { code: 0, stdout: readText(`${base}.out`) + '\n[Läuft im Terminal-Fenster weiter …]', stderr: '', visible: true, command, running: true };
+}
+
 async function handleLocal(req, res) {
   if (req.headers['x-dashboard-token'] !== TOKEN) return json(res, 403, { error: 'Nicht erlaubt' });
   const route = new URL(req.url, 'http://x').pathname;
@@ -511,6 +722,7 @@ async function handleLocal(req, res) {
     if (route === '/local/status' && req.method === 'GET') {
       const [version, installed] = await Promise.all([ollamaVersion(), ollamaInstalled()]);
       return json(res, 200, {
+        desktop: await desktopDir(),
         running: !!version,
         version,
         installed: !!installed || !!version,
@@ -537,8 +749,26 @@ async function handleLocal(req, res) {
       const command = String(body.command || '').trim();
       if (!command) return json(res, 400, { error: 'Kein Befehl angegeben' });
       const timeout = Math.min(Math.max(Number(body.timeout) || 120, 1), 1800) * 1000;
-      console.log(`  ⚡ Terminal: ${command}`);
-      return json(res, 200, await run(command, { timeout, cwd: body.cwd || undefined }));
+      const fixed = await prepareCommand(command);
+      console.log(`  ⚡ Befehl: ${fixed}`);
+      const r = await run(fixed, { timeout, cwd: body.cwd || await desktopDir() });
+      return json(res, 200, { ...r, code: normalizeCode(fixed, r.code), command: fixed });
+    }
+    if (route === '/local/terminal/run' && req.method === 'POST') {
+      const body = await readBody(req);
+      const command = String(body.command || '').trim();
+      if (!command) return json(res, 400, { error: 'Kein Befehl angegeben' });
+      const timeout = Math.min(Math.max(Number(body.timeout) || 300, 1), 3600) * 1000;
+      console.log(`  ⚡ KI-Terminal: ${command}`);
+      const r = await terminalRun(command, { timeout });
+      if (r) return json(res, 200, r);
+      // Kein sichtbares Terminal möglich (z. B. ohne Bildschirm) -> unsichtbar ausführen
+      const fixed = await prepareCommand(command);
+      const h = await run(fixed, { timeout, cwd: termCwd || await desktopDir() });
+      return json(res, 200, { ...h, code: normalizeCode(fixed, h.code), visible: false, command: fixed });
+    }
+    if (route === '/local/terminal/open' && req.method === 'POST') {
+      return json(res, 200, { ok: await openTerminal() });
     }
     if (route === '/local/web/search' && req.method === 'POST') {
       const body = await readBody(req);
@@ -595,6 +825,10 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res);
 });
 
+// Für Tests: Funktionen ohne laufenden Server nutzbar machen
+module.exports = { fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
+
+if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';
 server.listen(PORT, HOST, () => {
   const shown = HOST === '0.0.0.0' ? 'localhost' : HOST;
@@ -625,6 +859,8 @@ server.on('error', async (e) => {
   }
   throw e;
 });
+
+}
 
 function openBrowser(url) {
   const cmd = IS_WIN ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;

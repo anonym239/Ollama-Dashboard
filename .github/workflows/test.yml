@@ -1,0 +1,27 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax prüfen
+        shell: bash
+        run: |
+          node --check server.js
+          for f in public/js/*.js; do node --input-type=module --check < "$f"; done
+      - name: Selbsttest (Pfade, Dateien, KI-Terminal)
+        run: npm test
