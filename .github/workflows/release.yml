@@ -60,7 +60,8 @@ jobs:
         shell: pwsh
         run: |
           $env:NO_OPEN = "1"; $env:PORT = "3999"
-          $p = Start-Process -FilePath "dist\app\OllamaDashboard.exe" -PassThru -WindowStyle Hidden
+          # Mit dem Start-Parameter, den das Update nutzt (darf die .exe nicht stören)
+          $p = Start-Process -FilePath "dist\app\OllamaDashboard.exe" -ArgumentList "--nach-update" -PassThru -WindowStyle Hidden
           Start-Sleep -Seconds 4
           $r = Invoke-WebRequest -Uri "http://localhost:3999/" -UseBasicParsing
           Stop-Process -Id $p.Id -Force

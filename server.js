@@ -1093,8 +1093,8 @@ function updaterScript({ setupFile, exe, pid, log, allUsers = false }) {
     `Wait-Process -Id ${pid} -Timeout 30`,
     'Start-Sleep -Milliseconds 500',
     `$p = Start-Process -FilePath ${q(setupFile)} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/NOCANCEL','/SP-','${allUsers ? '/ALLUSERS' : '/CURRENTUSER'}',${q(`/LOG="${log}"`)} -Wait -PassThru`,
-    '$env:OD_AFTER_UPDATE = "1"',
-    `Start-Process -FilePath ${q(exe)} -WorkingDirectory ${q(dir)}`,
+    // Merker als Start-Parameter (Umgebungsvariablen kommen über Start-Process nicht zuverlässig an)
+    `Start-Process -FilePath ${q(exe)} -ArgumentList '--nach-update' -WorkingDirectory ${q(dir)}`,
     `Remove-Item -LiteralPath ${q(setupFile)} -Force`,
     'Remove-Item -LiteralPath $PSCommandPath -Force',
   ].join('\r\n');
@@ -1269,9 +1269,8 @@ server.listen(PORT, HOST, () => {
   console.log(`  ➜  Ollama:  ${DEFAULT_OLLAMA}`);
   console.log('\n  Dieses Fenster offen lassen, solange du das Dashboard nutzt.');
   console.log('  Schließen = Dashboard beenden.\n');
-  if (process.env.OD_AFTER_UPDATE) {
+  if (process.argv.includes('--nach-update')) {
     // Nach einem Update lädt sich die offene Seite selbst neu – nur wenn keine kommt, den Browser öffnen
-    delete process.env.OD_AFTER_UPDATE;
     setTimeout(() => { if (!pageServed && !process.env.NO_OPEN) openBrowser(`http://${shown}:${PORT}`); }, 10_000);
   } else if (!process.env.NO_OPEN) openBrowser(`http://${shown}:${PORT}`);
 });
