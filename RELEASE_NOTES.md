@@ -13,6 +13,18 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.5
+
+- **Code-Vorschau rechts**: Programmiert die KI eine Webseite oder ein Spiel, erscheint rechts eine **Live-Vorschau**, schon während sie schreibt. Die Breite lässt sich mit der Maus ziehen, dazu gibt es die Reiter Vorschau und Code, Neu laden, In neuem Tab öffnen und Kopieren. CSS- und JS-Dateien aus dem Chat werden automatisch eingebunden.
+- **YouTube & Vorschau-Karten**: Die Websuche findet YouTube-Videos und bei Kanälen die **neuesten Uploads**. Videos und Webseiten erscheinen als Karten mit Vorschaubild, Titel, Kanal, Datum und Aufrufen, auch für YouTube-Links in Antworten.
+- **Sucht von selbst**: Klingt eine Frage nach aktuellen Infos (YouTube, News, Preise, neueste Version …), sucht die App automatisch. Das klappt auch bei Modellen ohne Werkzeuge wie deepseek-r1.
+- **Dateien lesen & überschreiben**: Die KI kann vorhandene Dateien lesen und Ordner ansehen und Dateien gezielt überarbeiten, mit Warnung vor dem Überschreiben.
+- **Skills per Chat erstellen**: „Mach aus dieser .txt eine .skill-Datei“. Die KI schreibt den Skill direkt in ihren Skill-Ordner (`@skills/`) und zeigt dir ein Beispiel mit Auslöse-Wörtern.
+- **10 neue Skills**: Skills erstellen, Mathe, Texte schreiben, Erklären & Lernen, Übersetzen, Fehlersuche, Zusammenfassen, Daten & Tabellen und mehr. Skills können jetzt eine **Priorität** haben.
+- **Keine chinesischen Zeichen mehr**, auch nicht im Gedankengang. Sie werden bei der Anzeige ausgeblendet, Code bleibt unverändert.
+- **Ruhigere Denk-Animation**: Sie startet nicht mehr bei jedem Wort neu, die Farben sind sauberer.
+- **Bessere Skill-Auswahl**: „Programmieren“ wird nicht mehr bei Video-Fragen geladen.
+
 ### Neu in 1.4
 
 - **Code wird nicht doppelt geschrieben**: Soll vorhandener Code nur gespeichert werden, nutzt die KI einen Verweis (`@code`), und die App setzt den Code ein. Fängt die KI trotzdem an, ihn neu abzutippen, erkennt die App das nach wenigen Zeilen und übernimmt den fertigen Code sofort. Das spart viel Zeit und Leistung.

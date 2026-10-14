@@ -234,6 +234,8 @@ async function resolvePath(p) {
   const home = require('os').homedir();
   const desk = await desktopDir();
   if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return path.resolve(home, p.slice(2));
+  const sk = p.match(/^(@skills|skills-ordner|skill-ordner|skillordner)([\\/]|$)/i);
+  if (sk) return path.resolve(SKILLS_DIR, p.slice(sk[0].length));
   const m = p.match(/^(desktop|schreibtisch)([\\/]|$)/i);
   if (m) return path.resolve(desk, p.slice(m[0].length));
   if (path.isAbsolute(p)) return path.resolve(p);
@@ -243,7 +245,7 @@ async function resolvePath(p) {
 async function fsAction(action, body) {
   const fsp = fs.promises;
   if (action === 'info') {
-    return { desktop: await desktopDir(), home: require('os').homedir(), platform: process.platform };
+    return { desktop: await desktopDir(), home: require('os').homedir(), platform: process.platform, skillsDir: SKILLS_DIR };
   }
   const target = await resolvePath(body.path);
   if (action === 'stat') {
@@ -530,6 +532,24 @@ function bestPassages(text, terms, budget = 1800) {
   return picked.sort((a, b) => a.i - b.i).map((x) => x.c).join('\n…\n');
 }
 
+// Vorschau-Infos einer Seite (Titel, Bild, Beschreibung) aus den Meta-Tags
+function pageMeta(html, baseUrl) {
+  const meta = (name) => {
+    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, 'i');
+    const tag = html.match(re)?.[0];
+    const v = tag?.match(/content=["']([^"']*)["']/i)?.[1];
+    return v ? decodeEntities(v).trim() : '';
+  };
+  let image = meta('og:image') || meta('twitter:image');
+  if (image) { try { image = new URL(image, baseUrl).href; } catch { image = ''; } }
+  return {
+    title: meta('og:title') || meta('twitter:title'),
+    description: (meta('og:description') || meta('description')).slice(0, 220),
+    image: /^https:\/\//.test(image) ? image : '',
+    site: meta('og:site_name'),
+  };
+}
+
 async function fetchPage(url, maxChars = 8000, query = '') {
   let u;
   try { u = new URL(url); } catch { throw new Error('Ungültige URL'); }
@@ -539,10 +559,121 @@ async function fetchPage(url, maxChars = 8000, query = '') {
   const page = htmlToText(text);
   const terms = keyTerms(query);
   const body = terms.length ? bestPassages(page.text, terms, maxChars) : page.text.slice(0, maxChars);
-  return { url: finalUrl, title: page.title, text: body, truncated: page.text.length > body.length };
+  return { url: finalUrl, title: page.title, text: body, truncated: page.text.length > body.length, meta: pageMeta(text, finalUrl) };
 }
 
+// ---------- YouTube ----------
+const YT_HEADERS = { Cookie: 'CONSENT=YES+cb; SOCS=CAI', 'Accept-Language': 'de-DE,de;q=0.9' };
+
+function ytInitialData(html) {
+  const i = html.indexOf('ytInitialData');
+  if (i < 0) return null;
+  const start = html.indexOf('{', i);
+  // JSON bis zum passenden Ende lesen (Klammern zählen, Strings beachten)
+  let depth = 0;
+  let inStr = false;
+  for (let k = start; k < html.length; k++) {
+    const c = html[k];
+    if (inStr) { if (c === '\\') k++; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) {
+      try { return JSON.parse(html.slice(start, k + 1)); } catch { return null; }
+    }
+  }
+  return null;
+}
+
+const ytText = (t) => (t ? t.simpleText || (t.runs || []).map((r) => r.text).join('') : '');
+
+function ytCollect(node, out = { videos: [], channels: [] }, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 60) return out;
+  if (Array.isArray(node)) { for (const n of node) ytCollect(n, out, depth + 1); return out; }
+  for (const [k, v] of Object.entries(node)) {
+    if ((k === 'videoRenderer' || k === 'gridVideoRenderer') && v?.videoId) {
+      out.videos.push({
+        type: 'video',
+        videoId: v.videoId,
+        title: ytText(v.title),
+        channel: ytText(v.ownerText || v.shortBylineText),
+        published: ytText(v.publishedTimeText),
+        views: ytText(v.viewCountText) || ytText(v.shortViewCountText),
+        length: ytText(v.lengthText),
+        description: ytText(v.detailedMetadataSnippets?.[0]?.snippetText) || ytText(v.descriptionSnippet),
+      });
+    } else if (k === 'lockupViewModel' && v?.contentId && /VIDEO/.test(v.contentType || '')) {
+      // Neueres YouTube-Format
+      const md = v.metadata?.lockupMetadataViewModel;
+      const parts = [];
+      (function grab(o, d = 0) {
+        if (!o || typeof o !== 'object' || d > 12) return;
+        if (Array.isArray(o)) { o.forEach((x) => grab(x, d + 1)); return; }
+        if (typeof o.content === 'string' && o !== md?.title) parts.push(o.content);
+        Object.values(o).forEach((x) => grab(x, d + 1));
+      })(md?.metadata);
+      out.videos.push({ type: 'video', videoId: v.contentId, title: md?.title?.content || '', channel: parts[0] || '', published: parts.find((x) => /vor|ago/i.test(x)) || '', views: parts.find((x) => /aufruf|view/i.test(x)) || '', length: '', description: '' });
+    } else if (k === 'channelRenderer' && v?.channelId) {
+      out.channels.push({
+        name: ytText(v.title),
+        url: v.navigationEndpoint?.browseEndpoint?.canonicalBaseUrl || `/channel/${v.channelId}`,
+        subscribers: ytText(v.videoCountText) || ytText(v.subscriberCountText),
+      });
+    } else ytCollect(v, out, depth + 1);
+  }
+  return out;
+}
+
+function ytResult(v) {
+  return {
+    ...v,
+    url: `https://www.youtube.com/watch?v=${v.videoId}`,
+    image: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+    site: 'YouTube',
+    snippet: [v.channel, v.published, v.views, v.length].filter(Boolean).join(' · '),
+    content: `YouTube-Video: „${v.title}“ von ${v.channel || 'unbekannt'}${v.published ? `, veröffentlicht ${v.published}` : ''}${v.views ? `, ${v.views}` : ''}${v.length ? `, Länge ${v.length}` : ''}.${v.description ? ` Beschreibung: ${v.description}` : ''}`,
+  };
+}
+
+const wantsYouTube = (q) => /(youtube|youtuber|video|videos|kanal|channel|clip|vlog|stream|let'?s play)/i.test(q);
+
+async function searchYouTube(query) {
+  // Füllwörter raus, damit der Name des Kanals/Videos übrig bleibt
+  const q = query.replace(/\b(youtube|youtuber|auf|von|vom|das|die|der|den|neuste|neueste|neusten|neuesten|letzte|letzten|aktuelle|aktuellste|video|videos|kanal|channel|zeig|zeige|mir|bitte|such|suche|finde|link|zum|zur|was|ist|welches|welche)\b/gi, ' ').replace(/\s+/g, ' ').trim() || query;
+  const { text } = await fetchText(`https://www.youtube.com/results?hl=de&gl=DE&search_query=${encodeURIComponent(q)}`, { headers: YT_HEADERS });
+  const data = ytInitialData(text);
+  if (!data) throw new Error('YouTube-Seite nicht lesbar');
+  const found = ytCollect(data);
+  const results = [];
+  // Wird ein Kanal gesucht ("neustes Video von X"), dessen neueste Uploads holen
+  const channel = found.channels[0];
+  if (channel && /(neu|letzt|aktuell|kanal|channel|von )/i.test(query)) {
+    try {
+      const page = await fetchText(`https://www.youtube.com${channel.url}/videos?hl=de`, { headers: YT_HEADERS });
+      const ch = ytCollect(ytInitialData(page.text));
+      for (const v of ch.videos.slice(0, 5)) results.push(ytResult({ ...v, channel: v.channel || channel.name, latest: true }));
+    } catch { /* dann normale Treffer */ }
+  }
+  for (const v of found.videos.slice(0, 6)) if (!results.some((r) => r.videoId === v.videoId)) results.push(ytResult(v));
+  return { results, channel };
+}
+
+async function linkPreview(url) {
+  const u = new URL(url);
+  if (!/^https?:$/.test(u.protocol) || isPrivateHost(u.hostname)) throw new Error('Nicht erlaubt');
+  const yt = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/);
+  if (yt) {
+    const r = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${yt[1]}`)}`);
+    const j = r.ok ? await r.json() : {};
+    return { type: 'video', url, videoId: yt[1], title: j.title || 'YouTube-Video', channel: j.author_name || '', image: `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`, site: 'YouTube' };
+  }
+  const { text, url: finalUrl } = await fetchText(u.href, { timeout: 8000 });
+  const m = pageMeta(text, finalUrl);
+  return { type: 'page', url: finalUrl, title: m.title || htmlToText(text).title, description: m.description, image: m.image, site: m.site || u.hostname.replace(/^www\./, '') };
+}
+
+
 async function webSearch(query, { pages = 4, engine: preferred = 'google', keys = {} } = {}) {
+  const yt = wantsYouTube(query) ? searchYouTube(query).catch(() => null) : null;
   const terms = keyTerms(query);
   const anchors = anchorTerms(query, terms);
   // Gewählter Anbieter zuerst; passen die Treffer nicht, werden weitere Anbieter dazugenommen
@@ -574,15 +705,24 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
       } catch { /* weiter */ }
     }
   }
-  if (!results.length) throw new Error('Keine passenden Treffer gefunden – besteht eine Internetverbindung? (' + errors.join('; ') + ')');
+  const ytRes = yt ? await yt : null;
+  if (!results.length && !ytRes?.results.length) throw new Error('Keine passenden Treffer gefunden – besteht eine Internetverbindung? (' + errors.join('; ') + ')');
   results.sort((a, b) => b.score - a.score);
-  results = results.slice(0, 8);
-  // Die besten Seiten wirklich öffnen und die passenden Textstellen herausholen
+  results = results.filter((r) => !/youtube\.com\/(watch|results)/.test(r.url)).slice(0, 8);
+  // Die besten Seiten wirklich öffnen und die passenden Textstellen + Vorschau-Infos holen
   await Promise.all(results.slice(0, pages).map(async (r) => {
     if (r.content && r.content.length > 800) { r.content = bestPassages(r.content, terms, 1800); return; }
-    try { r.content = (await fetchPage(r.url, 1800, query)).text; } catch { /* nur Snippet */ }
+    try {
+      const page = await fetchPage(r.url, 1800, query);
+      r.content = page.text;
+      Object.assign(r, { image: page.meta.image, site: page.meta.site, description: page.meta.description });
+    } catch { /* nur Snippet */ }
   }));
-  return { query, engine: engines.join(' + '), results };
+  if (ytRes?.results.length) {
+    results = [...ytRes.results.slice(0, 5), ...results].slice(0, 9);
+    engines.unshift('YouTube');
+  }
+  return { query, engine: engines.join(' + '), results, channel: ytRes?.channel || null };
 }
 
 // ---------- Befehle für Windows reparieren ----------
@@ -852,6 +992,7 @@ function parseSkill(file, text) {
     description: meta.description || '',
     triggers: (meta.triggers || '').split(/[,;]/).map((t) => t.trim().toLowerCase()).filter(Boolean),
     always: /^(true|ja|yes|1)$/i.test(meta.always || ''),
+    priority: Math.min(10, Math.max(0.1, Number(meta.priority) || 1)),
     content: body.trim().slice(0, 8000),
   };
 }
@@ -925,6 +1066,10 @@ async function handleLocal(req, res) {
       if (!String(body.query || '').trim()) return json(res, 400, { error: 'Keine Suchanfrage' });
       return json(res, 200, await webSearch(String(body.query).trim(), { pages: body.pages ?? 4, engine: body.engine, keys: body.keys || {} }));
     }
+    if (route === '/local/web/preview' && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, 200, await linkPreview(String(body.url || '')));
+    }
     if (route === '/local/web/fetch' && req.method === 'POST') {
       const body = await readBody(req);
       return json(res, 200, await fetchPage(String(body.url || ''), body.query ? 6000 : 12_000, String(body.query || '')));
@@ -983,7 +1128,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
+module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

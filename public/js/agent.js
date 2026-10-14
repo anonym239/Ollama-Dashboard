@@ -101,12 +101,22 @@ ${win ? 'systeminfo' : 'uname -a'}
 \`\`\`
 ${win ? `Es ist die Windows-Eingabeaufforderung (cmd), KEIN Linux: Pfade mit Backslash \\ und in Anführungszeichen, z. B. dir "${desk}". Das Terminal startet im Desktop-Ordner. Programme/Ordner/Webseiten sichtbar öffnen: start notepad, start "" "${desk}", start https://beispiel.de` : `Das Terminal startet im Desktop-Ordner. Ordner/Programme öffnen: ${os === 'macOS' ? 'open' : 'xdg-open'} PFAD`}
 
-4. Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):
+4. Vorhandene Datei lesen bzw. Ordnerinhalt ansehen (danach aufhören, du bekommst den Inhalt):
+\`\`\`lesen
+Desktop/projekt/index.html
+\`\`\`
+\`\`\`liste
+Desktop/projekt
+\`\`\`
+Um eine vorhandene Datei zu ändern: erst lesen, dann die KOMPLETTE neue Fassung mit einem datei:-Block speichern (überschreibt die Datei – der Nutzer bestätigt das).
+${sys?.skillsDir ? `Dein Skill-Ordner (Anleitungen für dich als .skill-Dateien) ist erreichbar als @skills/ – z. B. \`\`\`datei:@skills/email.skill\n` : ''}${sys?.skillsDir ? '```' : ''}
+
+5. Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):
 \`\`\`ollama
 pull llama3.2
 \`\`\`
 ${webSearch ? `
-5. Im Internet suchen, wenn du etwas nicht sicher weißt oder es um Aktuelles geht:
+6. Im Internet suchen, wenn du etwas nicht sicher weißt oder es um Aktuelles geht:
 \`\`\`suche
 Suchbegriff
 \`\`\`
@@ -174,7 +184,7 @@ export function selectSkills(all, text, disabled = []) {
   const active = all.filter((s) => !disabled.includes(s.id));
   const picked = active
     .filter((s) => !s.always)
-    .map((s) => ({ s, score: s.triggers.filter(hit).length }))
+    .map((s) => ({ s, score: s.triggers.filter(hit).length * (s.priority || 1) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 2)
@@ -190,7 +200,7 @@ export function selectSkills(all, text, disabled = []) {
 }
 
 // ---------- Code wiederverwenden statt neu schreiben ----------
-const ACTION_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern', 'merken', 'ordner', 'folder']);
+const ACTION_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern', 'merken', 'ordner', 'folder', 'lesen', 'liste']);
 
 // Alle Code-Blöcke aus früheren KI-Antworten (nummeriert ab 1)
 export function collectCodeBlocks(messages) {
@@ -259,9 +269,36 @@ export function detectLanguage(text) {
 }
 
 export const LANGUAGE_REMINDER = {
-  de: '\n\n(Antworte ausschließlich auf Deutsch – ohne chinesische oder andere fremde Schriftzeichen.)',
-  en: '\n\n(Answer only in English – no Chinese or other foreign characters.)',
+  de: '\n\n(Denke und antworte ausschließlich auf Deutsch – ohne chinesische oder andere fremde Schriftzeichen.)',
+  en: '\n\n(Think and answer only in English – no Chinese or other foreign characters.)',
 };
+
+// Chinesische/japanische/koreanische Zeichen aus der Anzeige entfernen (nur außerhalb von Codeblöcken)
+const CJK = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]+/g;
+export function stripForeign(text, keepCode = true) {
+  const clean = (t) => t.replace(CJK, (m, i, all) => {
+    const before = all[i - 1] || ' ';
+    const after = all[i + m.length] || ' ';
+    return /\s/.test(before) || /\s/.test(after) || /[.,!?:;)]/.test(after) ? '' : ' ';
+  });
+  if (!keepCode) return clean(String(text || ''));
+  return String(text || '').split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : clean(part))).join('');
+}
+
+// Braucht die Frage aktuelle Infos aus dem Netz? Dann sucht die App selbst – auch für Modelle ohne Werkzeuge
+export function needsWeb(text) {
+  const t = String(text || '');
+  if (t.length > 1500 || /```/.test(t)) return false;
+  return /(youtube|youtuber|video|kanal|channel|tiktok|instagram|twitch|twitter|reddit|neueste?n?|neuste?n?|aktuell|heute|gerade|news|nachrichten|preis|kostet|kosten|wetter|wer ist|wer war|was ist (neu|los|passiert)|release|changelog|version|update|such\S* (im|nach|mal)|recherch|im internet|im web|google|online nach|link zu|wo finde|202[4-9])/i.test(t)
+    && !/(programmier|schreib\S* (mir )?(ein|einen|eine) (code|skript|programm)|erstell\S* (einen|eine) (ordner|datei))/i.test(t);
+}
+
+// Suchbegriff aus einer Frage machen (Füllwörter raus)
+export function makeQuery(text) {
+  const stop = /^(kannst|könntest|du|mir|mich|bitte|mal|doch|einfach|was|ist|sind|das|die|der|den|dem|des|ein|eine|einen|und|oder|wie|wo|wer|wann|welche|welcher|welches|zeig|zeige|sag|sage|such|suche|finde|im|in|auf|internet|web|nach|für|über|mit|zu|zum|zur|es|gibt|heißt|aktuell|gerade|ich|will|möchte|wissen|weißt|hey|hallo|okay|ok|also|link|links)$/i;
+  const words = String(text || '').replace(/[?!.,;:„“"()]/g, ' ').split(/\s+/).filter((w) => w && !stop.test(w));
+  return (words.length ? words : String(text).split(/\s+/)).slice(0, 10).join(' ');
+}
 
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
@@ -269,7 +306,7 @@ export function wantsExecution(text) {
 }
 
 const SHELL_LANGS = new Set(['cmd', 'bat', 'batch', 'powershell', 'ps1', 'pwsh', 'bash', 'sh', 'shell', 'zsh', 'console']);
-const STOP_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern']);
+const STOP_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern', 'lesen', 'liste']);
 
 function blockKind(info, intent) {
   const kind = info.trim().toLowerCase();
@@ -321,6 +358,10 @@ export function parseTextActions(content, { agent, webSearch, intent = false, co
       body.split('\n').map((l) => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean).forEach((fact) => actions.push({ name: 'remember', args: { fact } }));
     } else if (!agent) {
       continue;
+    } else if (kind === 'lesen' || kind === 'read') {
+      body.split('\n').map((l) => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean).forEach((p) => actions.push({ name: 'read_file', args: { path: p } }));
+    } else if (kind === 'liste' || kind === 'ordnerinhalt') {
+      body.split('\n').map((l) => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean).forEach((p) => actions.push({ name: 'list_directory', args: { path: p } }));
     } else if (kind === 'ordner' || kind === 'folder') {
       body.split('\n').map((l) => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean).forEach((p) => actions.push({ name: 'create_folder', args: { path: p } }));
     } else if (kind === 'befehl' || kind === 'terminal' || kind === 'command') {
@@ -362,9 +403,9 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       const output = r.results.map((x, i) =>
         `### Quelle ${i + 1}: ${x.title}\nURL: ${x.url}\n${x.content ? `Textstellen von der Seite:\n${x.content}` : `Kurzbeschreibung: ${x.snippet}`}`).join('\n\n');
       return {
-        output: `Websuche nach „${r.query}“ – echte Inhalte von ${r.results.length} Webseiten:\n\n${output}\n\nBeantworte jetzt die Frage des Nutzers aus diesen Textstellen (mit konkreten Details) und nenne die Quellen.`,
+        output: `Websuche nach „${r.query}“ – echte Inhalte von ${r.results.length} Quellen:\n\n${r.channel ? `Gefundener YouTube-Kanal: ${r.channel.name} (https://www.youtube.com${r.channel.url}). Die ersten Videos unten sind seine NEUESTEN Uploads.\n\n` : ''}${output}\n\nBeantworte jetzt die Frage des Nutzers aus diesen Inhalten (mit konkreten Details) und nenne die Quellen als Links. Bei Videos: Titel, Kanal, Datum und Link nennen – die App zeigt automatisch eine Vorschau.`,
         display: `${r.results.length} Treffer (${r.engine})`,
-        sources: r.results.slice(0, 6).map((x) => ({ title: x.title, url: x.url })),
+        sources: r.results.slice(0, 8).map((x) => ({ title: x.title, url: x.url, type: x.type || 'page', image: x.image || '', site: x.site || '', description: x.description || x.snippet || '', channel: x.channel || '', published: x.published || '', views: x.views || '', videoId: x.videoId || '' })),
       };
     }
     case 'fetch_webpage': {

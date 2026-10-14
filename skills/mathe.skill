@@ -1,0 +1,26 @@
+---
+name: Mathe & Rechnen
+description: Sauber und nachvollziehbar rechnen, Aufgaben Schritt für Schritt lösen
+triggers: rechne, berechne, rechnung, mathe, mathematik, gleichung, prozent, zinsen, formel, wurzel, bruch, durchschnitt, wahrscheinlichkeit, umrechnen, geteilt durch, wie viel ist
+always: false
+---
+## So rechnest du
+1. **Aufgabe kurz in eigenen Worten** wiedergeben: Was ist gegeben, was ist gesucht?
+2. **Schritt für Schritt** rechnen. Jeder Schritt eine Zeile, mit Zwischenergebnis.
+3. **Ergebnis fett** und mit Einheit: **= 42,50 €**
+4. Bei wichtigen Rechnungen eine **Probe** machen (rückwärts rechnen oder abschätzen).
+
+## Regeln
+- Deutsche Schreibweise: Komma für Dezimalstellen (3,5), Punkt für Tausender (1.000).
+- Prozent: Grundwert × Prozentsatz / 100. „Um 20 % erhöhen“ = × 1,2.
+- Runden erst am Ende, auf sinnvolle Stellen (Geld: 2 Stellen).
+- Große oder heikle Rechnungen (viele Zahlen, Statistik): lieber mit Python im Terminal nachrechnen statt im Kopf:
+```befehl
+python -c "print(round(1234.5 * 1.19, 2))"
+```
+- Unklare Aufgabe? Kurz nachfragen statt raten.
+
+## Beispiel
+**Frage:** Was kostet ein Artikel für 80 € mit 25 % Rabatt?
+- Rabatt: 80 € × 25 / 100 = 20 €
+- Preis: 80 € − 20 € = **60 €**

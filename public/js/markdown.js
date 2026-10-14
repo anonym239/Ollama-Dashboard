@@ -44,7 +44,7 @@ function codeBlock(info, code, open) {
   const path = file ? ` data-path="${escapeHtml(file[1].trim())}"` : '';
   const lang = file ? '' : ` data-lang="${escapeHtml(info.split(/\s+/)[0] || '')}"`;
   return `<div class="code-block${open ? ' streaming' : ''}${file ? ' file-block' : ''}"${path}${lang}><div class="code-head"><span>${label}</span>` +
-    `<span class="code-btns"><button class="code-btn" type="button" data-save-code title="Als Datei speichern">Speichern</button>` +
+    `<span class="code-btns">${/^(html?|svg|xml)$/i.test(file ? (file[1].split('.').pop() || '') : (info.split(/\s+/)[0] || '')) ? '<button class="code-btn" type="button" data-preview-code title="Rechts als Vorschau anzeigen">Vorschau</button>' : ''}<button class="code-btn" type="button" data-save-code title="Als Datei speichern">Speichern</button>` +
     `<button class="code-btn" type="button" data-copy-code>Kopieren</button></span></div>` +
     `<pre><code>${escapeHtml(code)}</code></pre></div>`;
 }

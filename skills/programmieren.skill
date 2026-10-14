@@ -1,7 +1,7 @@
 ---
 name: Programmieren
 description: Vollständige, lauffähige Programme schreiben und als Projekt auf dem Desktop speichern
-triggers: programmier, code, coden, skript, script, app, spiel, game, webseite, website, html, css, javascript, python, java, funktion, bug, fehler im code, kompilier, entwickel
+triggers: programmier, code, coden, skript, script, html, css, javascript, python, java, typescript, funktion, kompilier, entwickel, ein spiel, ein game, eine app, eine webseite, eine website, ein programm, ein tool, ein script
 always: false
 ---
 ## So programmierst du richtig

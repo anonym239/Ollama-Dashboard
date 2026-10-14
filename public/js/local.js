@@ -40,4 +40,5 @@ export const skillsApi = {
 export const web = {
   search: (query, engine = 'google', keys = {}, pages = 4) => call('/local/web/search', { method: 'POST', body: { query, engine, keys, pages } }),
   fetch: (url, query = '') => call('/local/web/fetch', { method: 'POST', body: { url, query } }),
+  preview: (url) => call('/local/web/preview', { method: 'POST', body: { url } }),
 };

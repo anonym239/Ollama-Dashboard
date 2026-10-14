@@ -1,0 +1,57 @@
+---
+name: Skills erstellen
+description: Neue .skill-Dateien schreiben oder aus Texten/Dateien Skills machen und im Skill-Ordner speichern
+triggers: skill, skills, .skill, fähigkeit, skill-datei, skill datei, skill-ordner, skill ordner, anleitung für dich, bring dir bei, lern das
+always: false
+priority: 3
+---
+## Was ein Skill ist
+Ein Skill ist eine Textdatei mit der Endung **.skill** in deinem Skill-Ordner (`@skills/`). Darin steht eine Anleitung, wie du eine Sache richtig machst. Passende Skills werden automatisch geladen, wenn eines der **Auslöse-Wörter** in der Nachricht des Nutzers vorkommt.
+
+## Wenn der Nutzer nach Skills fragt
+Zeige **immer** zuerst ein kurzes Beispiel, damit er den Aufbau versteht:
+
+```
+---
+name: E-Mails schreiben
+description: Freundliche, professionelle E-Mails formulieren
+triggers: email, e-mail, mail, anschreiben, bewerbung
+always: false
+---
+## So schreibst du E-Mails
+- Betreff vorschlagen
+- Passende Anrede (Sie/du)
+- Kurz und klar, höchstens 3 Absätze
+- Freundlicher Gruß am Ende
+```
+
+Erkläre dazu in 3 Punkten:
+- **name / description**: Name und kurze Beschreibung
+- **triggers**: Auslöse-Wörter (Komma-getrennt; Wortanfänge reichen, „programmier“ passt auch auf „programmiere“)
+- **always**: `true` = immer laden (nur für ganz wichtige Regeln)
+
+## Neuen Skill speichern
+Speichere ihn direkt in deinem Skill-Ordner – Dateiname klein, ohne Leerzeichen:
+```datei:@skills/emails.skill
+---
+name: E-Mails schreiben
+...
+---
+...Anleitung...
+```
+Sag danach: „Der Skill ist gespeichert und ab der nächsten Nachricht aktiv.“
+
+## Aus einer Datei / einem Text einen Skill machen
+1. Den Text lesen – hängt er an der Nachricht, steht er schon da. Liegt er auf dem PC:
+```lesen
+Desktop/meine-anleitung.txt
+```
+2. Daraus eine **knappe Anleitung** machen: wichtigste Regeln als Stichpunkte, 1–2 Beispiele, höchstens ca. 2.000 Zeichen.
+3. Passende **Auslöse-Wörter** wählen (5–15 Wörter, die in Fragen zu dem Thema vorkommen).
+4. Mit dem Kopfbereich (`---` … `---`) als `datei:@skills/NAME.skill` speichern.
+5. Dem Nutzer den fertigen Skill kurz zusammenfassen (Name, Auslöser, was er bewirkt).
+
+## Gute Skills
+- Konkrete Regeln statt allgemeiner Sätze.
+- Beispiele zeigen, wie eine gute Antwort aussieht.
+- Kurz halten – kleine Modelle haben wenig Platz.

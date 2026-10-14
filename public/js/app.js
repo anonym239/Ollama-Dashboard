@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { local, localFs, web, skillsApi } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -59,6 +59,8 @@ const DEFAULT_SETTINGS = {
   think: true,
   agent: true,
   visibleTerminal: true,
+  autoPreview: true,
+  previewWidth: 560,
   autoApprove: 'none',
   webSearch: true,
   searchEngine: 'google',
@@ -613,6 +615,7 @@ function newChat() {
 }
 
 function openChat(id) {
+  if (currentChatId !== id && !pv.el.hidden) closePreview();
   currentChatId = id;
   renderAll();
   if (isMobile()) setSidebar(false);
@@ -630,6 +633,9 @@ function renderAll() {
 // ---------------------------------------------------------------------------
 // Nachrichten darstellen
 // ---------------------------------------------------------------------------
+// Fremde Schriftzeichen nur ausblenden, wenn der Nutzer Deutsch/Englisch schreibt (Einstellung, Standard an)
+const shown = (m, text, keepCode = true) => (settings.filterForeign !== false && (m.lang || 'de') !== 'other' ? stripForeign(text, keepCode) : text);
+
 function splitThink(content) {
   const m = String(content || '').match(/^\s*<think>([\s\S]*?)(<\/think>|$)([\s\S]*)$/);
   if (!m) return { think: '', text: content || '' };
@@ -646,6 +652,7 @@ function renderMessages() {
   const scrolls = saveCodeScroll(el.inner);
   el.inner.innerHTML = chat.messages.map((m, i) => messageHtml(m, i, chat, m === lastAi)).join('');
   restoreCodeScroll(el.inner, scrolls);
+  hydratePreviews();
 }
 
 function welcomeHtml() {
@@ -684,8 +691,10 @@ function messageHtml(m, i, chat, isLastAi) {
   if (m.role === 'tool') return toolHtml(m);
 
   const streaming = busy?.msgId === m.id;
-  const { think, text } = splitThink(m.content);
-  const thinking = (m.thinking || '') + (think ? (m.thinking ? '\n' : '') + think : '');
+  const parts = splitThink(m.content);
+  const think = shown(m, parts.think, false);
+  const text = shown(m, parts.text);
+  const thinking = shown(m, m.thinking || '', false) + (think ? (m.thinking ? '\n' : '') + think : '');
   // Reine Werkzeugaufrufe ohne Text nicht als leere Blase anzeigen
   if (!streaming && !text.trim() && !thinking && !m.error && m.tool_calls?.length) return '';
   const a = getAssistant(m.assistantId);
@@ -695,6 +704,7 @@ function messageHtml(m, i, chat, isLastAi) {
       <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${m.skills?.length ? `<span class="skill-tag" title="Genutzte Skills">${escapeHtml(m.skills.join(', '))}</span>` : ''}${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
+      ${!streaming && m.content ? linkPreviewsHtml(m.content, sources) : ''}
       ${streaming ? '' : `<div class="msg-actions">
         <button class="icon-btn" data-action="copy" title="Kopieren">${icon('copy')}</button>
         <button class="icon-btn" data-action="speak" title="Vorlesen">${icon(speaker.currentId === m.id ? 'volumeOff' : 'volume')}</button>
@@ -742,12 +752,48 @@ function collectSources(chat, i) {
   return out.filter((s) => !seen.has(s.url) && seen.add(s.url)).slice(0, 8);
 }
 
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
+const ytId = (url) => String(url).match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/)?.[1] || '';
+
+// Große Vorschau-Karte: Video (Vorschaubild + Titel + Kanal) oder Webseite (Bild + Titel + Beschreibung)
+function previewCard(p) {
+  const vid = p.videoId || ytId(p.url);
+  const img = p.image || (vid ? `https://i.ytimg.com/vi/${vid}/hqdefault.jpg` : '');
+  const meta = vid ? [p.channel, p.published, p.views].filter(Boolean).join(' · ') : (p.site || hostOf(p.url));
+  return `<a class="pcard ${vid ? 'video' : ''}" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer"${p.hydrate ? ` data-preview-url="${escapeHtml(p.url)}"` : ''}>
+    ${img ? `<span class="pc-img"><img src="${escapeHtml(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.remove()">${vid ? `<span class="pc-play">${icon('play')}</span>` : ''}</span>` : ''}
+    <span class="pc-text"><span class="pc-title">${escapeHtml(p.title || hostOf(p.url))}</span>
+    ${!vid && p.description ? `<span class="pc-desc">${escapeHtml(p.description)}</span>` : ''}
+    <span class="pc-meta">${vid ? `<b class="pc-yt">YouTube</b> ` : `${icon('globe')} `}${escapeHtml(meta)}</span></span></a>`;
+}
+
 function sourcesHtml(sources) {
-  return `<div class="sources">${sources.map((s) => {
-    let host = '';
-    try { host = new URL(s.url).hostname.replace(/^www\./, ''); } catch { /* egal */ }
-    return `<a class="source-chip" href="${escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.title)}">${icon('globe')}<span>${escapeHtml(host || s.title)}</span></a>`;
-  }).join('')}</div>`;
+  // Videos und Seiten mit Bild als Karten, der Rest als kleine Links
+  const cards = sources.filter((s) => s.type === 'video' || ytId(s.url) || s.image).slice(0, 6);
+  const chips = sources.filter((s) => !cards.includes(s));
+  return `${cards.length ? `<div class="pcards">${cards.map(previewCard).join('')}</div>` : ''}
+    ${chips.length ? `<div class="sources">${chips.map((s) => `<a class="source-chip" href="${escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.title)}">${icon('globe')}<span>${escapeHtml(hostOf(s.url) || s.title)}</span></a>`).join('')}</div>` : ''}`;
+}
+
+// YouTube-Links in der Antwort bekommen automatisch eine Vorschau
+function linkPreviewsHtml(text, sources) {
+  const known = new Set(sources.map((s) => ytId(s.url)).filter(Boolean));
+  const ids = [...new Set([...String(text).matchAll(/https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[\w-]{11}[^\s)\]"]*/g)].map((m) => m[0]))]
+    .filter((u) => !known.has(ytId(u))).slice(0, 4);
+  return ids.length ? `<div class="pcards">${ids.map((u) => previewCard({ url: u, title: 'YouTube-Video', hydrate: true })).join('')}</div>` : '';
+}
+
+const previewCache = new Map();
+function hydratePreviews(root = el.inner) {
+  root.querySelectorAll('[data-preview-url]').forEach(async (card) => {
+    const url = card.dataset.previewUrl;
+    card.removeAttribute('data-preview-url');
+    try {
+      if (!previewCache.has(url)) previewCache.set(url, web.preview(url));
+      const p = await previewCache.get(url);
+      card.outerHTML = previewCard(p);
+    } catch { /* bleibt einfache Karte */ }
+  });
 }
 
 const STATUS_TEXT = { pending: 'Wartet auf Erlaubnis', running: 'Läuft …', done: 'Erledigt', error: 'Fehler', denied: 'Abgelehnt', cancelled: 'Abgebrochen' };
@@ -807,6 +853,7 @@ function updateMessageEl(m) {
   const scrolls = saveCodeScroll(node.parentNode);
   node.outerHTML = html;
   restoreCodeScroll(el.inner, scrolls);
+  hydratePreviews();
   if (wasOpen != null) {
     const d = document.querySelector(`#m-${m.id} details.thinking`);
     if (d) d.open = wasOpen;
@@ -823,15 +870,22 @@ function scheduleStreamRender(m) {
     const node = document.getElementById(`m-${m.id}`);
     if (!node) { if (currentChat()?.messages.includes(m)) renderMessages(); return; }
     if (busy?.msgId !== m.id) { updateMessageEl(m); return; } // Streaming schon beendet
-    const { think, text } = splitThink(m.content);
-    const thinking = (m.thinking || '') + (think ? '\n' + think : '');
+    const parts = splitThink(m.content);
+    const text = shown(m, parts.text);
+    const thinking = shown(m, (m.thinking || '') + (parts.think ? '\n' + parts.think : ''), false);
     const body = node.querySelector('.msg-body');
     let det = body.querySelector('details.thinking');
     if (thinking && !det) {
       body.insertAdjacentHTML('afterbegin', thinkingHtml(thinking, !text));
     } else if (det) {
       det.querySelector('.think-body').textContent = thinking;
-      det.querySelector('summary').innerHTML = text ? 'Gedankengang anzeigen' : '<span class="ti-label">Denkt nach</span>';
+      // Nur bei echtem Wechsel neu setzen – sonst startet die Animation bei jedem Wort neu
+      const sum = det.querySelector('summary');
+      const want = text ? 'done' : 'active';
+      if (sum.dataset.state !== want) {
+        sum.dataset.state = want;
+        sum.innerHTML = text ? 'Gedankengang anzeigen' : '<span class="ti-label">Denkt nach</span>';
+      }
       if (text && det.dataset.auto !== 'done') { det.open = false; det.dataset.auto = 'done'; }
     }
     // Nur Geändertes aktualisieren – so bleiben Scroll-Positionen (z. B. im Code-Fenster) erhalten
@@ -849,6 +903,13 @@ function patchChildren(parent, html) {
     const c = cur[i];
     if (!c) { parent.appendChild(n); return; }
     if (c.isEqualNode(n)) return;
+    // Denk-Anzeige behalten (Animation läuft weiter), nur den Text anpassen
+    if (c.nodeType === 1 && n.nodeType === 1 && c.classList.contains('think-ind') && n.classList.contains('think-ind')) {
+      const a = c.querySelector('.ti-label');
+      const b = n.querySelector('.ti-label');
+      if (a && b && a.textContent !== b.textContent) a.textContent = b.textContent;
+      return;
+    }
     if (c.nodeType === 1 && n.nodeType === 1 && c.classList.contains('code-block') && n.classList.contains('code-block')) {
       updateCodeBlock(c, n);
       return;
@@ -939,6 +1000,17 @@ el.inner.addEventListener('click', async (e) => {
     copyText(copyCode.closest('.code-block').querySelector('code').textContent);
     copyCode.textContent = 'Kopiert ✓';
     setTimeout(() => { copyCode.textContent = 'Kopieren'; }, 1500);
+    return;
+  }
+
+  const pvBtn = e.target.closest('[data-preview-code]');
+  if (pvBtn) {
+    const block = pvBtn.closest('.code-block');
+    const msgId = pvBtn.closest('[data-id]')?.dataset.id;
+    const chat = currentChat();
+    const m = chat?.messages.find((x) => x.id === msgId);
+    const idx = [...pvBtn.closest('.md').querySelectorAll('.code-block')].indexOf(block);
+    openPreviewFor(chat, m, idx, true);
     return;
   }
 
@@ -1191,6 +1263,12 @@ async function generate(chat) {
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
       await runAction(chat, act, controller.signal);
     }
+    // Klingt die Frage nach aktuellen Infos? Dann selbst suchen – auch Modelle ohne Werkzeuge bekommen echte Ergebnisse
+    if (settings.webSearch && lastUser?.content && needsWeb(lastUser.content) && !controller.signal.aborted) {
+      const act = { name: 'web_search', args: { query: makeQuery(lastUser.content) } };
+      turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
+      await runAction(chat, act, controller.signal);
+    }
     for (let round = 0; round < 6; round++) {
       const again = await generateRound(chat, controller.signal, turn);
       if (!again || controller.signal.aborted) break;
@@ -1260,7 +1338,11 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   // Unsichtbarer Sprach-Hinweis direkt an der letzten Nutzer-Nachricht (wirkt bei Qwen & Co. am zuverlässigsten)
   for (let k = messages.length - 1; k > 0; k--) {
     if (messages[k].role === 'user') {
-      messages[k] = { ...messages[k], content: messages[k].content + LANGUAGE_REMINDER[detectLanguage(lastUser?.content)] };
+      const translate = /(übersetz|translate|auf (englisch|spanisch|französisch|italienisch|türkisch|polnisch|russisch|arabisch|deutsch)|wie sagt man)/i.test(lastUser?.content || '');
+      const reminder = translate
+        ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
+        : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
+      messages[k] = { ...messages[k], content: messages[k].content + reminder };
       break;
     }
   }
@@ -1269,7 +1351,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     toast(`${model} kann keine Bilder sehen – nimm z. B. gemma3 oder llava.`, 'error');
   }
 
-  const msg = { id: uid(), role: 'assistant', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now(), skills: activeSkills.filter((x) => !x.always).map((x) => x.name) };
+  const msg = { id: uid(), role: 'assistant', lang: /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/.test(lastUser?.content || '') ? 'other' : 'de', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now(), skills: activeSkills.filter((x) => !x.always).map((x) => x.name) };
   chat.messages.push(msg);
   busy.msgId = msg.id;
   if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
@@ -1322,6 +1404,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
         }
       }
       if (currentChatId === chat.id) scheduleStreamRender(msg);
+      if (/```/.test(msg.content)) livePreview(chat, msg);
       if (auto) speaker.feed(splitThink(msg.content).text);
       persist(chat);
     }
@@ -1351,6 +1434,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     signal.removeEventListener('abort', onAbort);
   }
   busy.msgId = null;
+  if (/```/.test(msg.content)) livePreview(chat, msg);
   if (toolCalls.length) msg.tool_calls = toolCalls;
   if (currentChatId === chat.id) updateMessageEl(msg);
 
@@ -1486,6 +1570,145 @@ async function makeTitle(chat) {
     }
   } catch { /* Titel bleibt */ }
 }
+
+// ---------------------------------------------------------------------------
+// Code-Vorschau rechts (wie ein Mini-Browser, Breite ziehbar)
+// ---------------------------------------------------------------------------
+const pv = { el: $('#preview'), frame: $('#pvFrame'), code: $('#pvCode'), title: $('#pvTitle'), msgId: null, idx: -1, tab: 'preview', src: '', lang: '', dismissed: new Set(), lastLoad: 0, timer: null };
+const PREVIEWABLE = /^(html?|svg|xml)$/i;
+
+// Codeblöcke einer Nachricht (auch der noch offene beim Schreiben)
+function messageBlocks(content) {
+  const out = [];
+  const re = /```[ \t]*([^\n`]*)\n([\s\S]*?)(```|$)/g;
+  let m;
+  while ((m = re.exec(content))) {
+    const info = m[1].trim();
+    const file = info.match(/^(?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*(.+)$/i);
+    const path = file ? file[1].trim() : '';
+    const lang = (path ? path.split('.').pop() : info.split(/\s+/)[0] || '').toLowerCase();
+    out.push({ info, path, lang, code: m[2], open: !m[3] });
+    if (!m[3]) break;
+  }
+  return out;
+}
+
+// HTML mit CSS/JS-Dateien aus dem Chat zusammensetzen (style.css / script.js werden eingebettet)
+function bundleHtml(html, chat) {
+  const files = new Map();
+  for (const x of chat.messages) {
+    if (x.role !== 'assistant' || !x.content) continue;
+    for (const b of messageBlocks(splitThink(x.content).text)) if (b.path) files.set(b.path.split(/[\\/]/).pop().toLowerCase(), b.code);
+  }
+  return html
+    .replace(/<link[^>]+href=["']([^"']+\.css)["'][^>]*>/gi, (t, href) => (files.has(href.split('/').pop().toLowerCase()) ? `<style>\n${files.get(href.split('/').pop().toLowerCase())}\n</style>` : t))
+    .replace(/<script([^>]*)\ssrc=["']([^"']+\.js)["']([^>]*)>\s*<\/script>/gi, (t, a, src, b) => (files.has(src.split('/').pop().toLowerCase()) ? `<script${a}${b}>\n${files.get(src.split('/').pop().toLowerCase())}\n</script>` : t));
+}
+
+function setPreviewWidth(w) {
+  // Der Chat behält immer mindestens 420 px
+  const sidebarW = el.app.classList.contains('sidebar-hidden') || isMobile() ? 0 : el.sidebar.offsetWidth;
+  const max = Math.max(320, innerWidth - sidebarW - 420);
+  settings.previewWidth = Math.round(Math.min(max, Math.max(320, w)));
+  el.app.style.setProperty('--pv-w', `${settings.previewWidth}px`);
+}
+
+function showPreviewTab(tab) {
+  pv.tab = PREVIEWABLE.test(pv.lang) ? tab : 'code';
+  $$('[data-pv-tab]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.pvTab === pv.tab);
+    b.disabled = b.dataset.pvTab === 'preview' && !PREVIEWABLE.test(pv.lang);
+  });
+  pv.frame.hidden = pv.tab !== 'preview';
+  pv.code.hidden = pv.tab !== 'code';
+}
+
+function loadPreviewFrame(force = false) {
+  if (!PREVIEWABLE.test(pv.lang)) return;
+  if (!force && pv.frame.dataset.src === pv.src) return;
+  pv.frame.dataset.src = pv.src;
+  // Die Vorschau ist abgeschottet (kein Zugriff aufs Dashboard). localStorage gibt es dort nicht –
+  // damit Spiele mit Highscore usw. trotzdem laufen, bekommen sie einen Speicher im Arbeitsspeicher.
+  const shim = '<script>(function(){function m(){var d={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[k]=String(v)},removeItem:function(k){delete d[k]},clear:function(){d={}},key:function(i){return Object.keys(d)[i]||null},get length(){return Object.keys(d).length}}}try{window.localStorage.length}catch(e){try{Object.defineProperty(window,"localStorage",{value:m(),configurable:true});Object.defineProperty(window,"sessionStorage",{value:m(),configurable:true})}catch(_){}}})();<\/script>';
+  pv.frame.srcdoc = pv.lang === 'svg' ? `<body style="margin:0;display:grid;place-items:center;min-height:100vh">${pv.src}</body>` : shim + pv.src;
+  pv.lastLoad = Date.now();
+}
+
+function openPreviewFor(chat, m, idx = -1, manual = false) {
+  if (!chat || !m) return;
+  const blocks = messageBlocks(shown(m, splitThink(m.content).text));
+  if (!blocks.length) return;
+  let b = blocks[idx];
+  if (!b) b = [...blocks].reverse().find((x) => PREVIEWABLE.test(x.lang)) || blocks[blocks.length - 1];
+  // @code-Verweis -> echter Code
+  const ref = resolveCodeRef(b.code, b.path || `x.${b.lang}`, collectCodeBlocks(chat.messages.filter((x) => x !== m)));
+  const code = ref ?? b.code;
+  pv.msgId = m.id;
+  pv.idx = blocks.indexOf(b);
+  pv.lang = b.lang === 'htm' ? 'html' : b.lang;
+  pv.src = pv.lang === 'html' ? bundleHtml(code, chat) : code;
+  pv.title.textContent = b.path || (pv.lang ? `${pv.lang.toUpperCase()}-Code` : 'Code');
+  pv.code.querySelector('code').textContent = code;
+  if (manual) pv.dismissed.delete(m.id);
+  if (pv.el.hidden) {
+    pv.el.hidden = false;
+    el.app.classList.add('with-preview');
+    showPreviewTab(PREVIEWABLE.test(pv.lang) ? 'preview' : 'code');
+  } else showPreviewTab(manual && PREVIEWABLE.test(pv.lang) ? 'preview' : pv.tab);
+  // Beim Live-Schreiben nicht ständig neu laden (flackert) – höchstens alle 1,5 s
+  if (manual || b.open === false || Date.now() - pv.lastLoad > 1500) loadPreviewFrame(manual);
+  if (b.open) { clearTimeout(pv.timer); pv.timer = setTimeout(() => loadPreviewFrame(), 1600); }
+}
+
+function closePreview() {
+  if (pv.msgId) pv.dismissed.add(pv.msgId);
+  pv.el.hidden = true;
+  el.app.classList.remove('with-preview');
+  pv.frame.srcdoc = '';
+  pv.frame.dataset.src = '';
+}
+
+// Während die KI HTML schreibt: Vorschau automatisch öffnen und live mitlaufen lassen
+function livePreview(chat, m) {
+  if (!settings.autoPreview || pv.dismissed.has(m.id) || currentChatId !== chat.id) return;
+  const blocks = messageBlocks(splitThink(m.content).text);
+  const html = blocks.find((b) => /^html?$/.test(b.lang) && (b.code.length > 200 || !b.open));
+  if (!html) return;
+  openPreviewFor(chat, m, blocks.indexOf(html));
+}
+
+pv.el.addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-pv-tab]');
+  if (tab && !tab.disabled) { showPreviewTab(tab.dataset.pvTab); if (pv.tab === 'preview') loadPreviewFrame(); return; }
+  const act = e.target.closest('[data-pv]')?.dataset.pv;
+  if (act === 'close') closePreview();
+  if (act === 'reload') loadPreviewFrame(true);
+  if (act === 'copy') copyText(pv.code.textContent);
+  if (act === 'open') {
+    const url = URL.createObjectURL(new Blob([pv.src], { type: PREVIEWABLE.test(pv.lang) ? (pv.lang === 'svg' ? 'image/svg+xml' : 'text/html') : 'text/plain' }));
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+});
+
+// Breite per Ziehen ändern
+$('#pvResizer').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const handle = e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+  el.app.classList.add('pv-dragging');
+  const move = (ev) => setPreviewWidth(innerWidth - ev.clientX);
+  const up = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', up);
+    el.app.classList.remove('pv-dragging');
+    saveSettings();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', up);
+});
+$('#pvResizer').addEventListener('dblclick', () => { setPreviewWidth(560); saveSettings(); });
+addEventListener('resize', () => { if (!pv.el.hidden) setPreviewWidth(settings.previewWidth); });
 
 // ---------------------------------------------------------------------------
 // Gedächtnis: frühere Chats durchsuchen & Infos über den Nutzer merken
@@ -1835,6 +2058,7 @@ function openSettings() {
 
       <div><div class="section-title">Agent (Zugriff auf deinen PC)</div>
         ${sw('sAgent', settings.agent, 'Agent-Modus', 'KI darf Dateien/Ordner anlegen, Befehle ausführen und Ollama steuern')}
+        ${sw('sPreview', settings.autoPreview, 'Code-Vorschau automatisch öffnen', 'Programmiert die KI eine Webseite oder ein Spiel, erscheint rechts sofort eine Live-Vorschau')}
         ${sw('sTerm', settings.visibleTerminal, 'Sichtbares KI-Terminal', 'Befehle laufen in einem echten Terminal-Fenster auf deinem Bildschirm – die KI tippt sie dort selbst ein')}
         <div><button class="btn btn-sm" id="sTermOpen">${icon('terminal')} KI-Terminal jetzt öffnen</button></div>
         <div class="field"><label>Erlaubnis</label><select class="input" id="sApprove">
@@ -1898,6 +2122,7 @@ function openSettings() {
   bind('#sThink', (t) => { settings.think = t.checked; });
   bind('#sAgent', (t) => { settings.agent = t.checked; });
   bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
+  bind('#sPreview', (t) => { settings.autoPreview = t.checked; });
   q('#sTermOpen').onclick = async () => {
     try { const r = await local.openTerminal(); toast(r.ok ? 'KI-Terminal ist offen' : 'Kein Terminal-Fenster möglich', r.ok ? '' : 'error'); } catch (err) { toast(err.message, 'error'); }
   };
@@ -2040,6 +2265,11 @@ $('#closeSidebar').innerHTML = icon('x');
 $('.search-icon').innerHTML = icon('search');
 $('#attachBtn').innerHTML = icon('clip');
 micBtn.innerHTML = icon('mic');
+$('[data-pv="reload"]').innerHTML = icon('refresh');
+$('[data-pv="open"]').innerHTML = icon('external');
+$('[data-pv="copy"]').innerHTML = icon('copy');
+$('[data-pv="close"]').innerHTML = icon('x');
+setPreviewWidth(settings.previewWidth || 560);
 el.status.addEventListener('click', openModels);
 el.status.style.cursor = 'pointer';
 

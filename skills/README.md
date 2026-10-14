@@ -32,6 +32,7 @@ always: false
 | `description` | Kurze Beschreibung (nur für dich) |
 | `triggers` | Komma-getrennte Wörter oder Wortanfänge. Kommt eines davon in deiner Nachricht vor, wird der Skill geladen. `programmier` passt z. B. auch auf „programmiere“. |
 | `always` | `true` = Skill wird **immer** geladen (sparsam nutzen, kostet Platz im Gedächtnis der KI) |
+| `priority` | Optional, Standard `1`. Höherer Wert = wird bei mehreren passenden Skills bevorzugt (z. B. `3`) |
 
 ## Tipps
 

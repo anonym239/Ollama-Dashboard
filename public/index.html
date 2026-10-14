@@ -77,6 +77,28 @@
         <p class="footnote">Läuft 100 % lokal mit Ollama · Keine Cloud, keine API-Keys</p>
       </footer>
     </main>
+
+    <!-- Code-Vorschau (rechts, Breite ziehbar) -->
+    <aside class="preview" id="preview" hidden>
+      <div class="pv-resizer" id="pvResizer" title="Breite ziehen"></div>
+      <div class="pv-head">
+        <div class="pv-tabs">
+          <button type="button" data-pv-tab="preview" class="on">Vorschau</button>
+          <button type="button" data-pv-tab="code">Code</button>
+        </div>
+        <span class="pv-title" id="pvTitle"></span>
+        <div class="pv-actions">
+          <button type="button" class="icon-btn" data-pv="reload" title="Neu laden"></button>
+          <button type="button" class="icon-btn" data-pv="open" title="In neuem Tab öffnen"></button>
+          <button type="button" class="icon-btn" data-pv="copy" title="Code kopieren"></button>
+          <button type="button" class="icon-btn" data-pv="close" title="Schließen"></button>
+        </div>
+      </div>
+      <div class="pv-body">
+        <iframe id="pvFrame" title="Vorschau" sandbox="allow-scripts allow-modals allow-forms allow-pointer-lock allow-popups"></iframe>
+        <pre id="pvCode" hidden><code></code></pre>
+      </div>
+    </aside>
   </div>
 
   <div class="drop-overlay" id="dropOverlay"><div>Dateien hier ablegen</div></div>

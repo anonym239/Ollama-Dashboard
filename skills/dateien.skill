@@ -1,7 +1,7 @@
 ---
 name: Dateien & Ordner
 description: Dateien und Ordner zuverlässig erstellen, speichern, lesen und öffnen
-triggers: datei, ordner, speicher, erstell, anleg, desktop, txt, dokument, notiz, schreib in, verzeichnis, folder, file, öffne den ordner
+triggers: datei, ordner, speicher, erstell, anleg, desktop, txt, dokument, notiz, schreib in, verzeichnis, folder, file, öffne den ordner, lies, lesen, auslesen, überschreib, bearbeite, änder die datei, inhalt
 always: false
 ---
 ## Ordner und Dateien IMMER so anlegen (nie per echo/mkdir im Terminal)
@@ -26,11 +26,21 @@ Hier steht der vollständige Text der Datei.
 start "" "Mein Projekt"
 ```
 
-## Datei lesen oder Ordner ansehen
-Wenn du wissen musst, was in einer Datei steht: Nutze das Werkzeug `read_file` bzw. `list_directory`, oder:
-```befehl
-type "Mein Projekt\notizen.txt"
+## Vorhandene Datei lesen (danach aufhören, du bekommst den Inhalt)
+```lesen
+Desktop/Mein Projekt/notizen.txt
 ```
+Ordnerinhalt ansehen:
+```liste
+Desktop/Mein Projekt
+```
+
+## Vorhandene Datei ändern / überschreiben
+1. Erst **lesen** (siehe oben), damit du den aktuellen Inhalt kennst.
+2. Dann die **vollständige neue Fassung** mit einem datei:-Block unter **demselben Pfad** speichern.
+3. Der Nutzer sieht vorher eine Warnung „wird überschrieben“ und muss zustimmen.
+- Nie nur den geänderten Teil speichern, sonst geht der Rest der Datei verloren.
+- Soll das Original erhalten bleiben, speichere die neue Fassung unter neuem Namen (z. B. `notizen-neu.txt`).
 
 ## Nach dem Speichern
 Sag kurz, **wo** die Datei liegt und was drin ist – z. B. „Ich habe `notizen.txt` im Ordner *Mein Projekt* auf deinem Desktop gespeichert.“

@@ -1,0 +1,20 @@
+---
+name: Fehlersuche
+description: Fehler in Code, Programmen oder am PC systematisch finden und beheben
+triggers: fehler, error, funktioniert nicht, geht nicht, klappt nicht, kaputt, bug, absturz, stürzt ab, exception, traceback, warum geht, problem mit, lösung für, hilfe bei, startet nicht, lädt nicht
+always: false
+---
+## So findest du Fehler
+1. **Fehlermeldung genau lesen.** Sie sagt meist Datei, Zeile und Ursache. Zitiere die wichtige Zeile.
+2. **Ursache in einem Satz** nennen („Die Variable `score` wird benutzt, bevor sie existiert.“).
+3. **Fehlende Infos selbst holen**, statt zu raten:
+   - Datei ansehen: ```lesen``` Block
+   - Versionen/Umgebung prüfen: ```befehl``` Block (z. B. `python --version`, `node -v`)
+4. **Eine Lösung, sauber umgesetzt:** Bei Code die **ganze korrigierte Datei** speichern (datei:-Block), nicht nur die Zeile.
+5. **Prüfen**, ob es jetzt läuft (z. B. das Skript im Terminal starten) und das echte Ergebnis abwarten.
+
+## Regeln
+- Nicht mehrere Dinge gleichzeitig ändern – sonst weiß niemand, was geholfen hat.
+- Klappt der erste Versuch nicht: anderen Ansatz wählen, **nicht denselben Befehl wiederholen**.
+- Typische Ursachen zuerst prüfen: Tippfehler, falscher Pfad, fehlendes Paket (`pip install …`), falsche Version, Datei nicht gespeichert.
+- Keine riskanten Schritte (Löschen, Registry, Systemdateien) ohne Warnung und Zustimmung.

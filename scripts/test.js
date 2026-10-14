@@ -42,7 +42,7 @@ async function test(name, fn) {
   console.log('\nSkills');
   await test('Mitgelieferte Skills lassen sich lesen', () => {
     const list = srv.loadSkills();
-    assert.ok(list.length >= 6, `nur ${list.length} Skills`);
+    assert.ok(list.length >= 15, `nur ${list.length} Skills`);
     for (const sk of list) {
       assert.ok(sk.name && sk.content.length > 100, `${sk.file} ist leer`);
       assert.ok(sk.always || sk.triggers.length, `${sk.file} hat keine Auslöser`);
@@ -53,10 +53,32 @@ async function test(name, fn) {
     assert.deepStrictEqual([sk.name, sk.triggers, sk.always, sk.content], ['Test', ['a', 'b c'], true, 'Inhalt']);
   });
 
+  console.log('\nWebsuche & Vorschau');
+  await test('YouTube-Daten werden gelesen (inkl. Klammern in Titeln)', () => {
+    const html = '<script>var ytInitialData = {"a":[{"channelRenderer":{"channelId":"UC1","title":{"simpleText":"Kanal"},"navigationEndpoint":{"browseEndpoint":{"canonicalBaseUrl":"/@kanal"}}}},{"videoRenderer":{"videoId":"abcdefghijk","title":{"runs":[{"text":"Video {1} \\"Test\\""}]},"ownerText":{"runs":[{"text":"Kanal"}]},"publishedTimeText":{"simpleText":"vor 1 Tag"}}},{"lockupViewModel":{"contentId":"zyxwvutsrqp","contentType":"LOCKUP_CONTENT_TYPE_VIDEO","metadata":{"lockupMetadataViewModel":{"title":{"content":"Neues Format"}}}}}]};</script>';
+    const r = srv.ytCollect(srv.ytInitialData(html));
+    assert.deepStrictEqual(r.videos.map((v) => [v.videoId, v.title]), [['abcdefghijk', 'Video {1} "Test"'], ['zyxwvutsrqp', 'Neues Format']]);
+    assert.strictEqual(r.channels[0].url, '/@kanal');
+  });
+  await test('Vorschau-Infos (Open Graph) einer Seite', () => {
+    const m = srv.pageMeta('<meta property="og:title" content="Titel &amp; mehr"><meta property="og:image" content="/bild.png">', 'https://ollama.com/blog/x');
+    assert.deepStrictEqual([m.title, m.image], ['Titel & mehr', 'https://ollama.com/bild.png']);
+  });
+  await test('Unpassende Treffer werden aussortiert', () => {
+    const t = srv.keyTerms('neueste Funktionen Ollama');
+    const a = srv.anchorTerms('neueste Funktionen Ollama', t);
+    assert.ok(srv.scoreResult({ title: 'Nachrichten', snippet: 'Aktuelles', url: 'https://www.n-tv.de/' }, t, a) < 0.75);
+    assert.ok(srv.scoreResult({ title: 'Ollama', snippet: 'Run models', url: 'https://ollama.com/' }, t, a) >= 0.75);
+  });
+
   console.log('\nDateizugriff');
   const desk = await srv.desktopDir();
   fs.mkdirSync(desk, { recursive: true });
   const rel = `Desktop/od_selftest_${Date.now()}`;
+  await test('@skills/ zeigt in den Skill-Ordner', async () => {
+    const r = await srv.fsAction('stat', { path: '@skills/test.skill' });
+    assert.strictEqual(r.path, require('path').join(srv.SKILLS_DIR, 'test.skill'));
+  });
   await test('Ordner + Datei auf dem Desktop anlegen', async () => {
     await srv.fsAction('mkdir', { path: rel });
     const w = await srv.fsAction('write', { path: `${rel}/test.txt`, content: 'Hallo äöü ✓' });

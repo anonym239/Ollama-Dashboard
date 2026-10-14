@@ -1,8 +1,9 @@
 ---
 name: Websuche
 description: Richtig im Internet suchen, Webseiten lesen und daraus eine gute Antwort formulieren
-triggers: such, recherch, internet, web, google, online, aktuell, neueste, neuigkeit, news, preis, kostet, wetter, release, version, update, wer ist, 2025, 2026
+triggers: such, recherch, internet, web, google, online, aktuell, neueste, neuste, neuigkeit, news, nachrichten, preis, kostet, wetter, release, version, update, wer ist, youtube, video, kanal, channel, tiktok, instagram, twitch, reddit, link, film, serie, song, 2025, 2026
 always: false
+priority: 1.5
 ---
 ## So suchst du richtig im Web
 
@@ -17,6 +18,11 @@ So startest du eine Suche (danach sofort aufhören zu schreiben):
 ```suche
 Ollama new features release
 ```
+
+## YouTube, Videos, Kanäle
+- Für Videos nennst du Kanal oder Thema + „YouTube“, z. B. `hamedloco youtube`.
+- Wird ein Kanal gefunden, stehen seine **neuesten Uploads zuerst** in den Ergebnissen.
+- Nenne in der Antwort **Titel, Kanal, Datum und den Link**. Die App zeigt automatisch eine Vorschau mit Bild.
 
 ## So liest du die Ergebnisse
 - Du bekommst echte **Textstellen** von den Webseiten. Lies sie genau.

@@ -1,0 +1,33 @@
+---
+name: Daten & Tabellen
+description: Tabellen, CSV- und Excel-Daten auswerten, sortieren und Diagramme erstellen
+triggers: tabelle, csv, excel, xlsx, daten, auswert, auswertung, statistik, diagramm, chart, liste sortieren, summe, durchschnitt von, spalte, zeile, datensatz
+always: false
+---
+## So arbeitest du mit Daten
+1. **Daten ansehen:** Spalten und ein paar Zeilen nennen, damit klar ist, was drin ist. Liegt die Datei auf dem PC:
+```lesen
+Desktop/umsatz.csv
+```
+2. **Kleine Daten** (bis ca. 50 Zeilen): direkt rechnen und als Markdown-Tabelle zeigen.
+3. **Große Daten oder Excel:** ein kurzes Python-Skript schreiben, speichern und ausführen – nicht im Kopf rechnen:
+```datei:Desktop/auswertung.py
+import csv
+from statistics import mean
+with open(r"umsatz.csv", encoding="utf-8") as f:
+    rows = list(csv.DictReader(f, delimiter=";"))
+print("Zeilen:", len(rows))
+print("Durchschnitt:", round(mean(float(r["Betrag"].replace(",", ".")) for r in rows), 2))
+```
+```befehl
+python auswertung.py
+```
+4. **Ergebnis erklären:** wichtigste Zahlen fett, kurze Deutung („Der Umsatz ist im März am höchsten“).
+
+## Diagramme
+Für Diagramme eine HTML-Datei mit eingebettetem Chart erstellen (z. B. mit einfachem `<canvas>` und JavaScript). Die App zeigt sie rechts als Vorschau.
+
+## Regeln
+- Deutsche CSV-Dateien nutzen oft `;` als Trenner und `,` als Dezimalzeichen.
+- Excel (.xlsx) mit Python lesen: vorher `pip install openpyxl`.
+- Originaldaten nie überschreiben – Ergebnisse in neue Dateien speichern.
