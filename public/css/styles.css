@@ -665,3 +665,45 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 .know-item summary::-webkit-details-marker { display: none; }
 .know-text { margin: 10px 0 0; max-height: 240px; overflow: auto; white-space: pre-wrap; font: 12.5px/1.5 var(--font); color: var(--text-soft); background: var(--bg-soft); border-radius: 8px; padding: 10px; }
 .know-del { position: absolute; right: 8px; top: 8px; }
+
+/* ---------- Datei-Karte im Chat ("N Dateien bearbeitet") ---------- */
+.files-card { border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elev); margin: 4px 0 14px; overflow: hidden; max-width: 620px; }
+.fc-head { padding: 11px 14px; font-size: 14px; font-weight: 500; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+.fc-spin svg { width: 14px; height: 14px; animation: spin 1s linear infinite; color: var(--accent-text); }
+.fc-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 14px; border: none; background: none; text-align: left;
+  font-size: 14px; color: var(--text); border-bottom: 1px solid var(--border); transition: background .12s;
+}
+.fc-row:last-child { border-bottom: none; }
+.fc-row:hover { background: var(--bg-hover); }
+.fc-ico { display: flex; color: var(--text-faint); }
+.fc-ico svg { width: 15px; height: 15px; }
+.fc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-live { font-size: 12px; color: var(--accent-text); }
+.fc-add { color: #3fb950; font: 600 13px var(--mono); }
+.fc-del { color: #f85149; font: 600 13px var(--mono); }
+:root[data-theme="light"] .fc-add { color: #1a7f37; }
+:root[data-theme="light"] .fc-del { color: #cf222e; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .fc-add { color: #1a7f37; } :root:not([data-theme="dark"]) .fc-del { color: #cf222e; } }
+.fc-foot { display: flex; align-items: center; justify-content: space-between; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.fc-more { border: none; background: none; color: var(--text-soft); font-size: 13px; padding: 0; }
+.fc-more:hover { color: var(--text); text-decoration: underline; }
+
+/* ---------- Änderungen / Code mit Zeilennummern (rechts) ---------- */
+.pv-stats { flex: none; font-size: 12px; }
+.pv-lines { height: 100%; overflow: auto; background: var(--code-bg); }
+.pv-lines[hidden] { display: none; }
+.dl { border-collapse: collapse; width: 100%; font: 12.5px/1.55 var(--mono); }
+.dl td { padding: 0 10px; vertical-align: top; }
+.dl .ln { width: 1%; min-width: 38px; text-align: right; color: var(--text-faint); user-select: none; white-space: nowrap; opacity: .7; }
+.dl .tx { white-space: pre; color: var(--text); width: 100%; }
+.dl .sg { display: inline-block; width: 14px; color: var(--text-faint); user-select: none; }
+.dl tr.add { background: rgba(46, 160, 67, .16); }
+.dl tr.add .sg, .dl tr.add .ln { color: #3fb950; opacity: 1; }
+.dl tr.del { background: rgba(248, 81, 73, .16); }
+.dl tr.del .sg, .dl tr.del .ln { color: #f85149; opacity: 1; }
+.dl tr.fold td { background: var(--bg-soft); color: var(--text-faint); font-family: var(--font); font-size: 12px; padding: 4px 10px; }
+.dl-note, .dl-empty { padding: 10px 14px; font-size: 12.5px; color: var(--text-faint); border-bottom: 1px solid var(--border); }
+.pv-body { background: var(--bg-elev); }
+.link-btn { border: none; background: none; padding: 0 0 0 6px; color: var(--accent-text); font-size: 12.5px; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }

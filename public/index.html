@@ -83,20 +83,24 @@
       <div class="pv-resizer" id="pvResizer" title="Breite ziehen"></div>
       <div class="pv-head">
         <div class="pv-tabs">
+          <button type="button" data-pv-tab="diff">Änderungen</button>
           <button type="button" data-pv-tab="preview" class="on">Vorschau</button>
           <button type="button" data-pv-tab="code">Code</button>
         </div>
         <span class="pv-title" id="pvTitle"></span>
+        <span class="pv-stats" id="pvStats"></span>
         <div class="pv-actions">
           <button type="button" class="icon-btn" data-pv="reload" title="Neu laden"></button>
           <button type="button" class="icon-btn" data-pv="open" title="In neuem Tab öffnen"></button>
           <button type="button" class="icon-btn" data-pv="copy" title="Code kopieren"></button>
+          <button type="button" class="icon-btn" data-pv="save" title="Als Datei speichern"></button>
           <button type="button" class="icon-btn" data-pv="close" title="Schließen"></button>
         </div>
       </div>
       <div class="pv-body">
         <iframe id="pvFrame" title="Vorschau" sandbox="allow-scripts allow-modals allow-forms allow-pointer-lock allow-popups"></iframe>
-        <pre id="pvCode" hidden><code></code></pre>
+        <div id="pvCode" class="pv-lines" hidden></div>
+        <div id="pvDiff" class="pv-lines" hidden></div>
       </div>
     </aside>
   </div>

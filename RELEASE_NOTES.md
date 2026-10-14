@@ -13,6 +13,14 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.8
+
+- **Code kompakt im Chat**: Schreibt die KI Dateien oder längeren Code, erscheint statt langer Code-Blöcke eine Karte **„N Dateien bearbeitet“** mit **+hinzugefügten / −gelöschten Zeilen** pro Datei und in der Summe.
+- **Änderungen ansehen**: Ein Klick auf eine Datei zeigt rechts, was sich geändert hat. Gelöschte Zeilen sind rot, neue grün, mit Zeilennummern alt/neu, und unveränderte Bereiche sind eingeklappt. Dazu gibt es die Reiter **Code** (mit Zeilennummern) und **Vorschau** (bei HTML) sowie Kopieren, Speichern und In neuem Tab öffnen.
+- Verglichen wird mit der vorigen Fassung im Chat oder mit der Datei, die vor dem Überschreiben auf deinem PC lag. Neue Dateien sind komplett grün.
+- Gespeicherte Dateien erscheinen nur noch als kleine Zeile mit „Öffnen“.
+- „Mach die Schlange grün“ und ähnliche Änderungswünsche gelten nicht mehr fälschlich als neues Thema.
+
 ### Neu in 1.7
 
 - **Die KI wählt ihre Skills selbst**: Vor jeder Antwort schaut sie in den Skill-Ordner, liest Titel und Beschreibung aller Skills und nutzt die, die bei deiner Frage wirklich helfen. Das klappt auch ohne passende Auslöse-Wörter, etwa „Wie viel Trinkgeld bei 47 €?“ mit dem Mathe-Skill. Im Chat siehst du „Skills gelesen: …“.

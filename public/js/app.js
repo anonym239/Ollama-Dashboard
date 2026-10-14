@@ -4,6 +4,7 @@ import { chatsDb, loadJson, loadList, saveJson, uid } from './store.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
+import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, skillsApi } from './local.js';
 import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
 
@@ -715,10 +716,101 @@ function messageHtml(m, i, chat, isLastAi) {
     </div></div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Code im Chat kompakt: "N Dateien bearbeitet" mit +/− Zeilen, Details rechts
+// ---------------------------------------------------------------------------
+const ACTION_BLOCKS = /^(befehl|terminal|command|suche|search|ollama|erinnern|merken|ordner|folder|lesen|liste|cmd|bat|batch|powershell|ps1|bash|sh|shell|console)$/i;
+const FILE_MIN_LINES = 8;
+const fileKey = (p) => String(p || '').replace(/\\/g, '/').toLowerCase().split('/').filter(Boolean).slice(-2).join('/');
+const expandedCards = new Set();
+const diffCache = new Map();
+
+// Welche Codeblöcke einer Antwort sind "Dateien"? (datei:-Blöcke und längerer Code)
+function fileBlocks(text) {
+  return messageBlocks(text).map((b, idx) => ({ ...b, idx })).filter((b) => {
+    if (b.path) return true;
+    if (ACTION_BLOCKS.test(b.info.split(/\s+/)[0] || '')) return false;
+    return b.code.split('\n').length >= FILE_MIN_LINES;
+  });
+}
+
+const codeOf = (chat, m, b) => resolveCodeRef(b.code, b.path || `x.${b.lang}`, collectCodeBlocks(chat.messages.filter((x) => x !== m))) ?? b.code;
+
+// Vorherige Fassung derselben Datei: früher im Chat, gelesen oder vor dem Überschreiben auf der Platte
+function baseVersion(chat, m, b) {
+  const key = fileKey(b.path);
+  if (!key) return null;
+  const at = chat.messages.indexOf(m);
+  for (let i = at; i >= 0; i--) {
+    const x = chat.messages[i];
+    if (x.role === 'assistant' && x.content) {
+      const blocks = messageBlocks(splitThink(x.content).text);
+      const list = i === at ? blocks.slice(0, b.idx) : blocks;
+      for (const y of [...list].reverse()) if (y.path && fileKey(y.path) === key && !y.open) return codeOf(chat, x, y);
+    } else if (x.role === 'tool' && x.name === 'read_file' && x.fileContent != null && fileKey(x.path || x.args?.path) === key) {
+      return x.fileContent;
+    }
+  }
+  // Inhalt, der beim Speichern dieser Antwort überschrieben wurde
+  for (let i = at + 1; i < chat.messages.length && chat.messages[i].role !== 'user'; i++) {
+    const t = chat.messages[i];
+    if (t.role === 'tool' && t.name === 'write_file' && t.before != null && fileKey(t.args?.path) === key) return t.before;
+  }
+  return null;
+}
+
+function fileDiff(chat, m, b) {
+  const code = codeOf(chat, m, b);
+  const base = baseVersion(chat, m, b);
+  const ck = `${m.id}:${b.idx}:${code.length}:${base?.length ?? -1}`;
+  if (!b.open && diffCache.has(ck)) return diffCache.get(ck);
+  const lines = diffLines(base || '', code);
+  const r = { lines, ...diffStats(lines), isNew: base == null, code };
+  if (!b.open) diffCache.set(ck, r);
+  return r;
+}
+
+function filesCardHtml(chat, m, files, streaming) {
+  const rows = files.map((b) => {
+    const d = b.open ? { added: b.code.split('\n').length - 1, removed: 0 } : fileDiff(chat, m, b);
+    const name = b.path ? b.path.split(/[\\/]/).pop() : `Code.${b.lang || 'txt'}`;
+    return { b, d, name };
+  });
+  const total = rows.reduce((acc, r) => ({ added: acc.added + r.d.added, removed: acc.removed + r.d.removed }), { added: 0, removed: 0 });
+  const expanded = expandedCards.has(m.id) || rows.length <= 5;
+  const shownRows = expanded ? rows : rows.slice(0, 4);
+  const writing = streaming && files.some((f) => f.open);
+  return `<div class="files-card" data-msg="${m.id}">
+    <div class="fc-head">${writing ? `<span class="fc-spin">${icon('loader')}</span> Schreibt ${rows.length === 1 ? 'Datei' : 'Dateien'} …` : `${rows.length} ${rows.length === 1 ? 'Datei' : 'Dateien'} ${rows.some((r) => r.b.path) ? 'bearbeitet' : 'mit Code'}`}</div>
+    ${shownRows.map((r) => `<button type="button" class="fc-row" data-file-idx="${r.b.idx}" title="${escapeHtml(r.b.path || r.name)} – Änderungen anzeigen">
+      <span class="fc-ico">${icon('file')}</span><span class="fc-name">${escapeHtml(r.name)}</span>${r.b.open ? '<span class="fc-live">schreibt …</span>' : ''}
+      <span class="fc-add">+${r.d.added}</span><span class="fc-del">−${r.d.removed}</span></button>`).join('')}
+    ${rows.length > 5 ? `<div class="fc-foot"><button type="button" class="fc-more" data-toggle-files="${m.id}">${expanded ? 'Weniger anzeigen' : `Alle ${rows.length} anzeigen`}</button><span><span class="fc-add">+${total.added}</span> <span class="fc-del">−${total.removed}</span></span></div>` : ''}
+  </div>`;
+}
+
+// Datei-Blöcke durch die Karte ersetzen (an der Stelle des ersten Blocks)
+function withFilesCard(text, streaming, m) {
+  const chat = currentChat();
+  if (!chat || !chat.messages.includes(m)) return null;
+  const files = fileBlocks(text);
+  if (!files.length) return null;
+  let out = '';
+  let pos = 0;
+  files.forEach((b, i) => {
+    out += text.slice(pos, b.start) + (i === 0 ? '\n\n@@FILESCARD@@\n\n' : '');
+    pos = b.end;
+  });
+  out += text.slice(pos);
+  const html = renderMarkdown(out);
+  const card = filesCardHtml(chat, m, files, streaming);
+  return html.includes('<p>@@FILESCARD@@</p>') ? html.replace('<p>@@FILESCARD@@</p>', card) : html + card;
+}
+
 function bodyHtml(text, streaming, m) {
   if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
   if (streaming && !text.trim()) return thinkIndicator(m.thinking ? 'Denkt nach' : 'Überlegt');
-  let html = renderMarkdown(text);
+  let html = (m.role === 'assistant' && withFilesCard(text, streaming, m)) || renderMarkdown(text);
   if (m.reusedCode && !streaming) html += `<p class="reuse-note">${icon('copy')} Code ${m.reusedCode} aus dem Chat übernommen – nicht neu geschrieben</p>`;
   if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
   return streaming ? html.replace(/(<\/p>|<\/li>)(?![\s\S]*(<\/p>|<\/li>))/, '<span class="cursor"></span>$1') : html;
@@ -815,6 +907,12 @@ function toolHtml(t) {
     const running = t.status === 'running';
     const label = t.name === 'remember' ? `Gemerkt: ${escapeHtml(t.args?.fact || '')}` : `In früheren Chats nachgesehen${t.hits != null ? ` · ${t.hits} ${t.hits === 1 ? 'Stelle' : 'Stellen'}` : ''}`;
     return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : t.name === 'remember' ? 'save' : 'search')} ${running ? 'Erinnere mich …' : label}</span></div>`;
+  }
+  // Gespeicherte Dateien: nur eine kleine Zeile (die Karte "Dateien bearbeitet" zeigt schon alles)
+  if (t.name === 'write_file' && t.status === 'done') {
+    const name = String(t.path || t.args?.path || '').split(/[\\/]/).pop();
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research">${icon('save')} ${t.before != null ? 'Überschrieben' : 'Gespeichert'}: ${escapeHtml(name)}${t.reused ? ' · übernommener Code' : ''}
+      ${t.path ? `<button type="button" class="link-btn" data-open-path="${escapeHtml(t.path)}">Öffnen</button>` : ''}</span></div>`;
   }
   if (t.name === 'web_search' || t.name === 'fetch_webpage') {
     const running = t.status === 'running';
@@ -1010,6 +1108,23 @@ el.inner.addEventListener('click', async (e) => {
     copyText(copyCode.closest('.code-block').querySelector('code').textContent);
     copyCode.textContent = 'Kopiert ✓';
     setTimeout(() => { copyCode.textContent = 'Kopieren'; }, 1500);
+    return;
+  }
+
+  const toggleFiles = e.target.closest('[data-toggle-files]');
+  if (toggleFiles) {
+    const id = toggleFiles.dataset.toggleFiles;
+    if (expandedCards.has(id)) expandedCards.delete(id); else expandedCards.add(id);
+    const chat = currentChat();
+    const m = chat?.messages.find((x) => x.id === id);
+    if (m) updateMessageEl(m);
+    return;
+  }
+  const fileRow = e.target.closest('[data-file-idx]');
+  if (fileRow) {
+    const chat = currentChat();
+    const m = chat?.messages.find((x) => x.id === fileRow.closest('[data-id]')?.dataset.id);
+    openPreviewFor(chat, m, Number(fileRow.dataset.fileIdx), true, 'diff');
     return;
   }
 
@@ -1565,6 +1680,10 @@ async function runAction(chat, act, signal) {
 
   try {
     let lastShow = 0;
+    if (t.name === 'write_file' && t.before === undefined) {
+      // alten Inhalt für die Änderungs-Ansicht merken (null = neue Datei)
+      t.before = await localFs.read(t.args.path).then((x) => (x.size < 300_000 ? x.content : null)).catch(() => null);
+    }
     const r = await executeTool(t.name, t.args, {
       signal,
       searchEngine: settings.searchEngine,
@@ -1578,6 +1697,8 @@ async function runAction(chat, act, signal) {
       },
     });
     Object.assign(t, { status: 'done', output: r.output, display: r.display, sources: r.sources, path: r.path, failedRun: !!r.failed, hits: r.hits });
+    if (t.name === 'read_file' && r.content != null) t.fileContent = r.content;
+    if (t.name === 'write_file' && currentChatId === chat.id) renderMessages(); // +/- Zahlen aktualisieren
     if (r.modelsChanged) refreshModels();
   } catch (err) {
     t.status = signal.aborted ? 'cancelled' : 'error';
@@ -1644,7 +1765,7 @@ function messageBlocks(content) {
     const file = info.match(/^(?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*(.+)$/i);
     const path = file ? file[1].trim() : '';
     const lang = (path ? path.split('.').pop() : info.split(/\s+/)[0] || '').toLowerCase();
-    out.push({ info, path, lang, code: m[2], open: !m[3] });
+    out.push({ info, path, lang, code: m[2], open: !m[3], start: m.index, end: m.index + m[0].length });
     if (!m[3]) break;
   }
   return out;
@@ -1671,13 +1792,27 @@ function setPreviewWidth(w) {
 }
 
 function showPreviewTab(tab) {
-  pv.tab = PREVIEWABLE.test(pv.lang) ? tab : 'code';
+  pv.tab = tab === 'preview' && !PREVIEWABLE.test(pv.lang) ? 'diff' : tab;
   $$('[data-pv-tab]').forEach((b) => {
     b.classList.toggle('on', b.dataset.pvTab === pv.tab);
     b.disabled = b.dataset.pvTab === 'preview' && !PREVIEWABLE.test(pv.lang);
   });
   pv.frame.hidden = pv.tab !== 'preview';
   pv.code.hidden = pv.tab !== 'code';
+  $('#pvDiff').hidden = pv.tab !== 'diff';
+}
+
+function renderCodeLines(code) {
+  const lines = String(code).replace(/\n$/, '').split('\n');
+  return `<table class="dl">${lines.map((l, i) => `<tr><td class="ln">${i + 1}</td><td class="tx">${escapeHtml(l) || ' '}</td></tr>`).join('')}</table>`;
+}
+
+function renderDiffLines(d) {
+  const rows = foldDiff(d.lines, 3);
+  if (!d.added && !d.removed) return '<div class="dl-empty">Keine Änderungen gegenüber der vorherigen Fassung.</div>';
+  return `${d.isNew ? '<div class="dl-note">Neue Datei – alle Zeilen hinzugefügt</div>' : ''}<table class="dl">${rows.map((l) => (l.type === 'fold'
+    ? `<tr class="fold"><td class="ln"></td><td class="ln"></td><td class="tx">··· ${l.count} unveränderte ${l.count === 1 ? 'Zeile' : 'Zeilen'}</td></tr>`
+    : `<tr class="${l.type}"><td class="ln">${l.a ?? ''}</td><td class="ln">${l.b ?? ''}</td><td class="tx"><span class="sg">${l.type === 'add' ? '+' : l.type === 'del' ? '−' : ' '}</span>${escapeHtml(l.text) || ' '}</td></tr>`)).join('')}</table>`;
 }
 
 function loadPreviewFrame(force = false) {
@@ -1691,7 +1826,7 @@ function loadPreviewFrame(force = false) {
   pv.lastLoad = Date.now();
 }
 
-function openPreviewFor(chat, m, idx = -1, manual = false) {
+function openPreviewFor(chat, m, idx = -1, manual = false, wantTab = null) {
   if (!chat || !m) return;
   const blocks = messageBlocks(shown(m, splitThink(m.content).text));
   if (!blocks.length) return;
@@ -1705,13 +1840,19 @@ function openPreviewFor(chat, m, idx = -1, manual = false) {
   pv.lang = b.lang === 'htm' ? 'html' : b.lang;
   pv.src = pv.lang === 'html' ? bundleHtml(code, chat) : code;
   pv.title.textContent = b.path || (pv.lang ? `${pv.lang.toUpperCase()}-Code` : 'Code');
-  pv.code.querySelector('code').textContent = code;
+  pv.path = b.path;
+  pv.rawCode = code;
+  pv.code.innerHTML = renderCodeLines(code);
+  const d = b.open ? { lines: diffLines(baseVersion(chat, m, { ...b, idx: blocks.indexOf(b) }) || '', code), added: 0, removed: 0 } : fileDiff(chat, m, { ...b, idx: blocks.indexOf(b) });
+  if (b.open) Object.assign(d, diffStats(d.lines), { isNew: false });
+  $('#pvDiff').innerHTML = renderDiffLines(d);
+  $('#pvStats').innerHTML = `<span class="fc-add">+${d.added}</span> <span class="fc-del">−${d.removed}</span>`;
   if (manual) pv.dismissed.delete(m.id);
   if (pv.el.hidden) {
     pv.el.hidden = false;
     el.app.classList.add('with-preview');
-    showPreviewTab(PREVIEWABLE.test(pv.lang) ? 'preview' : 'code');
-  } else showPreviewTab(manual && PREVIEWABLE.test(pv.lang) ? 'preview' : pv.tab);
+    showPreviewTab(wantTab || (PREVIEWABLE.test(pv.lang) ? 'preview' : 'diff'));
+  } else showPreviewTab(wantTab || (manual && PREVIEWABLE.test(pv.lang) ? 'preview' : pv.tab));
   // Beim Live-Schreiben nicht ständig neu laden (flackert) – höchstens alle 1,5 s
   if (manual || b.open === false || Date.now() - pv.lastLoad > 1500) loadPreviewFrame(manual);
   if (b.open) { clearTimeout(pv.timer); pv.timer = setTimeout(() => loadPreviewFrame(), 1600); }
@@ -1729,6 +1870,7 @@ function closePreview() {
 function livePreview(chat, m) {
   if (!settings.autoPreview || pv.dismissed.has(m.id) || currentChatId !== chat.id) return;
   const blocks = messageBlocks(splitThink(m.content).text);
+  if (!pv.el.hidden && pv.msgId === m.id && pv.tab !== 'preview') { openPreviewFor(chat, m, pv.idx); return; }
   const html = blocks.find((b) => /^html?$/.test(b.lang) && (b.code.length > 200 || !b.open));
   if (!html) return;
   openPreviewFor(chat, m, blocks.indexOf(html));
@@ -1740,7 +1882,13 @@ pv.el.addEventListener('click', (e) => {
   const act = e.target.closest('[data-pv]')?.dataset.pv;
   if (act === 'close') closePreview();
   if (act === 'reload') loadPreviewFrame(true);
-  if (act === 'copy') copyText(pv.code.textContent);
+  if (act === 'copy') copyText(pv.rawCode || '');
+  if (act === 'save') {
+    promptDialog('Code als Datei speichern', pv.path || `Desktop/KI-Projekte/datei.${pv.lang || 'txt'}`, { label: 'Speicherort', hint: 'Relative Pfade landen auf dem Desktop.' }).then(async (p) => {
+      if (!p) return;
+      try { const r = await localFs.write(p, pv.rawCode.endsWith('\n') ? pv.rawCode : pv.rawCode + '\n'); toast(`Gespeichert: ${r.path}`); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
   if (act === 'open') {
     const url = URL.createObjectURL(new Blob([pv.src], { type: PREVIEWABLE.test(pv.lang) ? (pv.lang === 'svg' ? 'image/svg+xml' : 'text/html') : 'text/plain' }));
     window.open(url, '_blank', 'noopener');
@@ -2508,6 +2656,7 @@ micBtn.innerHTML = icon('mic');
 $('[data-pv="reload"]').innerHTML = icon('refresh');
 $('[data-pv="open"]').innerHTML = icon('external');
 $('[data-pv="copy"]').innerHTML = icon('copy');
+$('[data-pv="save"]').innerHTML = icon('save');
 $('[data-pv="close"]').innerHTML = icon('x');
 setPreviewWidth(settings.previewWidth || 560);
 el.status.addEventListener('click', openModels);

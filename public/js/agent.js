@@ -326,6 +326,8 @@ function topicTerms(text) {
 const overlaps = (a, b) => a.some((x) => b.some((y) => x === y || (x.length > 5 && y.length > 5 && x.slice(0, 5) === y.slice(0, 5))));
 // "das"/"dies" nur als Verweis ("merk dir das", "erklär das genauer"), nicht als Artikel ("das Wetter")
 const PRONOUN_REF = /\b(das|dies|dieses|es)\b\s*(?=$|[?.!,]|noch|nochmal|genauer|bitte|auch|mal|für|in|als|zu|an|ab|um)/i;
+// Aufforderungen, etwas am Bisherigen zu ändern ("mach die Schlange grün"), sind immer Fortsetzungen
+const EDIT_VERBS = /^\s*(bitte\s+)?(mach|mache|ändere|änder|füge|füg|ergänze|entferne|lösch|lösche|verbessere|fixe|fix|korrigiere|erweitere|bau|baue|setz|setze|nimm|stell|stelle|pass|passe)\b/i;
 const BACKREF = /\b(diese|diesen|dazu|davon|darüber|damit|dafür|daran|darin|daraus|dabei|ihn|ihm|oben|vorhin|eben|vorher|deine antwort|dein code|der code|weiter|nochmal|noch mal|genauer|mehr dazu|beispiel|beispiele|zusammen|fass|übersetz|korrigier|verbesser|änder)\b/i;
 
 // 'same' = gleiches Thema, 'new' = neues Thema, 'old' = zurück zu einem früheren Thema
@@ -335,7 +337,7 @@ export function topicShift(text, windowTexts, olderTexts) {
   if (terms.length < 2 || String(text).length < 20) return 'same'; // kurze Rückfrage wie "und auf Englisch?"
   if (overlaps(terms, topicTerms(windowTexts.join(' ')))) return 'same';
   if (olderTexts.length && overlaps(terms, topicTerms(olderTexts.join(' ')))) return 'old';
-  if (BACKREF.test(text) || PRONOUN_REF.test(text)) return 'same'; // "erklär das genauer", "merk dir das"
+  if (BACKREF.test(text) || PRONOUN_REF.test(text) || EDIT_VERBS.test(text)) return 'same'; // "erklär das genauer", "merk dir das"
   return 'new';
 }
 
@@ -502,7 +504,7 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
     }
     case 'read_file': {
       const r = await localFs.read(args.path);
-      return { output: `Inhalt von ${r.path}${r.truncated ? ' (gekürzt)' : ''}:\n${r.content}`, display: `${r.path} (${formatBytes(r.size)})`, path: r.path };
+      return { output: `Inhalt von ${r.path}${r.truncated ? ' (gekürzt)' : ''}:\n${r.content}`, display: `${r.path} (${formatBytes(r.size)})`, path: r.path, content: r.truncated ? null : r.content };
     }
     case 'list_directory': {
       const r = await localFs.list(args.path || 'Desktop');
