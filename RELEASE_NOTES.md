@@ -13,6 +13,16 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.6
+
+- **Wissensspeicher**: Sag „merk dir das“, und die App speichert dauerhaft, **in allen Chats verfügbar**:
+  - eingefügte Texte (auch aus der vorigen Nachricht),
+  - angehängte Dateien und PDFs,
+  - Links (die Seite wird gelesen),
+  - oder die letzte Antwort der KI („genau, merk dir das“).
+- In jedem Chat bekommt die KI automatisch die **passenden Stellen** aus dem Wissen zu deiner Frage. Die Themenliste kennt sie immer.
+- **Einstellungen → Gedächtnis**: Gespeichertes Wissen ansehen, von Hand hinzufügen oder löschen. Es ist im Export/Import enthalten.
+
 ### Neu in 1.5.1
 
 - **Erkennt Themenwechsel**: Stellst du eine neue Frage, die nichts mit dem bisherigen Gespräch zu tun hat, bezieht die KI sie nicht mehr auf das alte Thema. Nur das aktuelle Thema geht an die KI, und im Chat erscheint ein dezenter Trenner „Neues Thema“. Kommst du auf ein früheres Thema zurück, wird der ganze Chat wieder genutzt. Kurze Rückfragen wie „erklär das genauer“ bleiben im Zusammenhang.

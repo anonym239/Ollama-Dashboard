@@ -64,7 +64,7 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [], codeBlocks = [] }) {
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [], codeBlocks = [], knowledge = null }) {
   // Nur das Datum (ohne Uhrzeit): So bleibt der Prompt gleich und Ollama muss ihn nicht jedes Mal neu einlesen
   const now = new Date().toLocaleDateString('de-DE', { dateStyle: 'full' });
   const win = sys?.platform === 'win32';
@@ -76,6 +76,11 @@ export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, mo
   parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte immer vollständig in der Sprache des Nutzers (meist Deutsch) – niemals chinesische oder andere fremde Schriftzeichen. Klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
 
   if (memory.length) parts.push(`## Was du über den Nutzer weißt\n${memory.map((f) => `- ${f}`).join('\n')}`);
+  if (knowledge?.titles?.length) {
+    parts.push(`## Dein gespeichertes Wissen (vom Nutzer zum Merken gegeben)
+Themen: ${knowledge.titles.join(' · ')}
+${knowledge.passages.length ? `Passende Auszüge zur aktuellen Frage – nutze sie bevorzugt, sie sind genauer als dein allgemeines Wissen:\n\n${knowledge.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}` : 'Passt eine Frage zu einem dieser Themen, sieh mit einem erinnern-Block nach.'}`);
+  }
   if (recentChats.length) parts.push(`## Frühere Chats mit dem Nutzer\n${recentChats.join('\n')}\nWenn der Nutzer sich auf frühere Gespräche bezieht, sieh dort nach – mit einem Block:\n\`\`\`erinnern\nSuchbegriff\n\`\`\`\nDanach aufhören, du bekommst die passenden Stellen.`);
   parts.push('Wichtige Infos über den Nutzer (Name, Vorlieben, Projekte) kannst du dir dauerhaft merken:\n```merken\nDer Nutzer heißt Alex.\n```');
 

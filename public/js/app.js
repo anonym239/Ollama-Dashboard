@@ -801,6 +801,9 @@ const STATUS_TEXT = { pending: 'Wartet auf Erlaubnis', running: 'Läuft …', do
 function toolHtml(t) {
   const meta = TOOL_META[t.name] || { icon: 'zap', label: () => t.name };
   // Websuche läuft dezent im Hintergrund – nur eine kleine Zeile
+  if (t.name === 'remember_text') {
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research">${icon('save')} Dauerhaft gemerkt: ${escapeHtml((t.args?.titles || []).join(', '))} – in allen Chats verfügbar</span></div>`;
+  }
   if (t.name === 'search_chats' || t.name === 'remember') {
     const running = t.status === 'running';
     const label = t.name === 'remember' ? `Gemerkt: ${escapeHtml(t.args?.fact || '')}` : `In früheren Chats nachgesehen${t.hits != null ? ` · ${t.hits} ${t.hits === 1 ? 'Stelle' : 'Stellen'}` : ''}`;
@@ -1277,6 +1280,15 @@ async function generate(chat) {
   await refreshSkills(); // neue/geänderte .skill-Dateien sofort nutzen
   try {
     const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+    if (lastUser?.content && REMEMBER_INTENT.test(lastUser.content)) {
+      const saved = await autoRemember(chat, lastUser);
+      if (saved.length) {
+        lastUser.remembered = saved.map((k) => k.title);
+        chat.messages.push({ id: uid(), role: 'tool', name: 'remember_text', native: false, status: 'done', args: { titles: lastUser.remembered }, output: `Dauerhaft im Wissensspeicher gespeichert (in allen Chats verfügbar): ${saved.map((k) => `„${k.title}“ (${k.text.length} Zeichen)`).join(', ')}.`, createdAt: Date.now() });
+        if (currentChatId === chat.id) renderMessages();
+        persist(chat);
+      }
+    }
     if (lastUser?.content && MEMORY_INTENT.test(lastUser.content) && chats.length > 1) {
       const act = { name: 'search_chats', args: { query: lastUser.content } };
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
@@ -1331,7 +1343,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const activeSkills = selectSkills(skills, lastUser?.content, settings.disabledSkills);
   const codeBlocks = collectCodeBlocks(chat.messages);
   const reuseIntent = agentOn && codeBlocks.length && wantsReuse(lastUser?.content);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks }) }];
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks, knowledge: knowledgeContext(lastUser?.content || '') }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
   // Bei neuem Thema nur das aktuelle Thema schicken – sonst vermischt die KI alles
@@ -1363,7 +1375,8 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       const reminder = translate
         ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
         : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
-      messages[k] = { ...messages[k], content: messages[k].content + intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart }) + reminder };
+      const savedHint = lastUser?.remembered?.length ? `\n\n(Die App hat das bereits dauerhaft gespeichert: ${lastUser.remembered.join(', ')}. Schreibe KEINEN merken-Block. Bestätige kurz und fasse das Gemerkte in 2–3 Sätzen zusammen.)` : '';
+      messages[k] = { ...messages[k], content: messages[k].content + (savedHint || intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart })) + reminder };
       break;
     }
   }
@@ -1758,6 +1771,12 @@ const memory = {
         hits.push({ score: score + (m.role === 'user' ? 0.2 : 0) + c.updatedAt / 1e15, chat: c.title, date: fmtDate(m.createdAt || c.updatedAt), who: m.role === 'user' ? 'Nutzer' : 'KI', text: (start ? '…' : '') + text.slice(start, start + 360) + (text.length > start + 360 ? '…' : '') });
       }
     }
+    for (const k of knowledge) {
+      const ctx = knowledgeContext(query, 800);
+      if (!ctx.passages.length) break;
+      for (const p of ctx.passages) hits.push({ score: 5, chat: `Wissen: ${p.title}`, date: new Date(k.createdAt).toLocaleDateString('de-DE'), who: 'Gemerkt', text: p.text.slice(0, 600) });
+      break;
+    }
     if (hits.length) return hits.sort((a, b) => b.score - a.score).slice(0, 6);
     // Allgemeine Frage ("worüber haben wir gesprochen?") -> Überblick über die letzten Chats
     return [...chats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6).map((c) => {
@@ -1785,6 +1804,104 @@ async function refreshSkills() {
     skillsDir = r.dir || '';
   } catch { /* Server alt oder offline */ }
   return skills;
+}
+
+// ---------------------------------------------------------------------------
+// Wissensspeicher: lange Texte, die der Nutzer "merken" lässt – in allen Chats verfügbar
+// ---------------------------------------------------------------------------
+let knowledge = loadList('od.knowledge', []);
+const saveKnowledge = () => saveJson('od.knowledge', knowledge);
+const REMEMBER_INTENT = /\b(merk|merke|merken|merkst|speicher dir|behalt|behalte|vergiss (das )?nicht|notier dir|lern das|lerne das|präg dir)/i;
+const KNOW_STOP = new Set('und oder aber der die das den dem des ein eine einen einer mit von zu im in am an auf aus bei für über was wie wer wo wann ist sind war hat haben ich du wir mir mich dir dich noch mal bitte weißt kannst kann über sich auch nicht'.split(' '));
+const knowTerms = (t) => [...new Set(String(t || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !KNOW_STOP.has(w)))];
+
+function knowledgeTitle(text, fallback = '') {
+  const head = String(text).match(/^\s*#{1,3}\s+(.+)$/m)?.[1];
+  const base = head || fallback || String(text).replace(/\s+/g, ' ').trim();
+  const words = base.replace(/[#*_`>\[\]]/g, '').split(/\s+/).slice(0, 9).join(' ');
+  return words.length > 70 ? words.slice(0, 70) + '…' : words || 'Notiz';
+}
+
+function addKnowledge({ title, text, source = '' }) {
+  text = String(text || '').trim().slice(0, 60_000);
+  if (text.length < 20) return null;
+  const existing = knowledge.find((k) => k.text === text);
+  if (existing) return existing;
+  const entry = { id: uid(), title: title || knowledgeTitle(text), text, source, createdAt: Date.now() };
+  knowledge.unshift(entry);
+  saveKnowledge();
+  return entry;
+}
+
+// Passende Stellen aus dem Wissen zur aktuellen Frage (in Absätze zerlegt, nach Treffern sortiert)
+function knowledgeContext(query, budget = 3500) {
+  if (!knowledge.length) return { titles: [], passages: [] };
+  const terms = knowTerms(query);
+  const chunks = [];
+  for (const k of knowledge) {
+    const titleHits = knowTerms(k.title).filter((t) => terms.some((q) => q === t || (q.length > 4 && t.startsWith(q.slice(0, 5))))).length;
+    const paras = k.text.split(/\n{2,}|(?<=[.!?])\s+(?=[A-ZÄÖÜ])/).reduce((acc, p) => {
+      const last = acc[acc.length - 1];
+      if (last && (last + ' ' + p).length < 700) acc[acc.length - 1] = `${last} ${p}`; else acc.push(p);
+      return acc;
+    }, []);
+    paras.forEach((c, i) => {
+      const low = c.toLowerCase();
+      let score = titleHits * 2;
+      for (const t of terms) if (low.includes(t)) score += 1;
+      if (score > 0) chunks.push({ k, i, c: c.trim(), score });
+    });
+  }
+  chunks.sort((a, b) => b.score - a.score);
+  const passages = [];
+  let used = 0;
+  for (const ch of chunks) {
+    if (used + ch.c.length > budget) continue;
+    passages.push(ch);
+    used += ch.c.length;
+  }
+  // nach Eintrag und Reihenfolge gruppieren
+  const grouped = new Map();
+  for (const p of passages.sort((a, b) => a.i - b.i)) {
+    if (!grouped.has(p.k.id)) grouped.set(p.k.id, { title: p.k.title, text: [] });
+    grouped.get(p.k.id).text.push(p.c);
+  }
+  return { titles: knowledge.slice(0, 25).map((k) => k.title), passages: [...grouped.values()].map((g) => ({ title: g.title, text: g.text.join('\n…\n') })) };
+}
+
+// "Merk dir das": den passenden Text finden und speichern – Dateien, Links, eingefügter Text oder die letzte Antwort
+async function autoRemember(chat, lastUser) {
+  const idx = chat.messages.indexOf(lastUser);
+  const before = chat.messages.slice(0, idx);
+  const prevAi = [...before].reverse().find((m) => m.role === 'assistant' && m.content && !m.error);
+  const prevUser = [...before].reverse().find((m) => m.role === 'user');
+  const stripped = lastUser.content.replace(/\b(bitte|genau|ok(ay)?|ja|und|kannst du|du|dir|mir|das|dies|diesen|text|alles|merk|merke|merken|speicher|behalt|behalte|vergiss|nicht|notier|lern|lerne|präg)\b/gi, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const saved = [];
+  // Bezieht sich "merk dir …" auf das Vorherige? (nur Befehl, oder Begriffe aus der letzten Antwort) – nicht bei eigenen Fakten wie "ich heiße Alex"
+  const ownFact = /\b(ich (heiße|heisse|bin|wohne|arbeite|mag|habe)|mein(e|en|em)? (name|lieblings|geburtstag|hobby|job|beruf))/i.test(lastUser.content);
+  const refersBack = (src) => !ownFact && (stripped.length < 8 || (src && knowTerms(stripped).some((t) => src.toLowerCase().includes(t))));
+  // 1) angehängte Dateien
+  for (const f of lastUser.files || []) if (f.text) saved.push(addKnowledge({ title: knowledgeTitle(f.text, f.name), text: f.text, source: f.name }));
+  // 2) Links in der Nachricht -> Seite lesen
+  for (const url of (lastUser.content.match(/https?:\/\/[^\s)>\]"]+/g) || []).slice(0, 3)) {
+    try {
+      const page = await web.fetch(url);
+      saved.push(addKnowledge({ title: page.title || knowledgeTitle(page.text), text: page.text, source: url }));
+    } catch { /* Seite nicht erreichbar */ }
+  }
+  // 3) langer eingefügter Text in dieser Nachricht
+  if (!saved.length && lastUser.content.length > 300) saved.push(addKnowledge({ text: lastUser.content.replace(REMEMBER_INTENT, '').trim(), source: 'Eingefügter Text' }));
+  // 4) langer Text in der vorigen Nachricht ("[Text einfügen]" … "merk dir das")
+  if (!saved.length && refersBack(prevUser?.content) && prevUser && prevUser.content.length > 300 && (!prevAi || before.indexOf(prevUser) > before.indexOf(prevAi))) {
+    saved.push(addKnowledge({ text: prevUser.content, source: 'Eingefügter Text' }));
+  }
+  // 5) sonst die letzte Antwort der KI ("genau, merk dir das")
+  if (!saved.length && prevAi && refersBack(prevAi.content)) {
+    const q = [...before].reverse().find((m) => m.role === 'user' && before.indexOf(m) < before.indexOf(prevAi));
+    const text = splitThink(prevAi.content).text.replace(/```(?:suche|befehl|erinnern|merken)[\s\S]*?```/g, '').trim();
+    if (text.length > 120) saved.push(addKnowledge({ title: knowledgeTitle(text, q?.content), text: q ? `Frage: ${q.content}\n\n${text}` : text, source: 'Antwort im Chat' }));
+  }
+  return saved.filter(Boolean);
 }
 
 function recentChatList(chat) {
@@ -2111,7 +2228,10 @@ function openSettings() {
       <div><div class="section-title">Gedächtnis</div>
         <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Das weiß die KI dauerhaft über dich. Sie merkt sich Dinge selbst oder wenn du „Merk dir …“ sagst. Frühere Chats durchsucht sie automatisch, wenn du dich darauf beziehst.</p>
         <div class="list" id="memList"></div>
-        <div class="row" style="margin-top:8px"><input class="input grow" id="memAdd" placeholder="z. B. Ich heiße Alex und programmiere gern in Python"><button class="btn" id="memAddBtn">Hinzufügen</button></div></div>
+        <div class="row" style="margin-top:8px"><input class="input grow" id="memAdd" placeholder="z. B. Ich heiße Alex und programmiere gern in Python"><button class="btn" id="memAddBtn">Hinzufügen</button></div>
+        <div class="field-label" style="margin:16px 0 6px">Gespeichertes Wissen <span class="hint" style="font-weight:400;color:var(--text-faint)">– Texte, Webseiten und Antworten, die du mit „merk dir das“ gespeichert hast</span></div>
+        <div class="list" id="knowList"></div>
+        <div style="margin-top:8px"><button class="btn btn-sm" id="knowAdd">${icon('plus')} Text hinzufügen</button></div></div>
 
       <div><div class="section-title">Sprachausgabe</div>
         ${sw('sTts', settings.tts.auto, 'Antworten automatisch vorlesen', 'Liest schon während die KI schreibt')}
@@ -2195,6 +2315,39 @@ function openSettings() {
     const b = e.target.closest('[data-mem-del]');
     if (b) { settings.memory.splice(+b.dataset.memDel, 1); saveSettings(); renderMem(); }
   });
+  const renderKnow = () => {
+    q('#knowList').innerHTML = knowledge.length ? knowledge.map((k) => `<details class="list-item know-item"><summary class="li-main">
+        <div class="li-title">${escapeHtml(k.title)}</div>
+        <div class="li-sub">${new Date(k.createdAt).toLocaleDateString('de-DE')} · ${k.text.length.toLocaleString('de-DE')} Zeichen${k.source ? ` · ${escapeHtml(k.source)}` : ''}</div></summary>
+        <pre class="know-text">${escapeHtml(k.text.slice(0, 4000))}${k.text.length > 4000 ? '\n…' : ''}</pre>
+        <button class="icon-btn know-del" data-know-del="${k.id}" title="Vergessen">${icon('trash')}</button></details>`).join('')
+      : '<div class="empty-state" style="padding:8px">Noch nichts gespeichert. Schick der KI einen Text oder Link und sag „merk dir das“.</div>';
+  };
+  renderKnow();
+  q('#knowList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-know-del]');
+    if (!b) return;
+    e.preventDefault();
+    knowledge = knowledge.filter((k) => k.id !== b.dataset.knowDel);
+    saveKnowledge();
+    renderKnow();
+  });
+  q('#knowAdd').onclick = () => {
+    const m2 = openModal({
+      title: 'Wissen hinzufügen',
+      body: `<div class="field"><label>Titel</label><input class="input" id="kTitle" placeholder="z. B. OpenClaw"></div>
+        <div class="field"><label>Text</label><textarea class="input" id="kText" style="min-height:220px" placeholder="Text hier einfügen …"></textarea></div>`,
+      foot: '<button class="btn" data-close>Abbrechen</button><button class="btn btn-primary" id="kSave">Speichern</button>',
+    });
+    $('#kSave', m2.el).onclick = () => {
+      const text = $('#kText', m2.el).value.trim();
+      if (!text) return;
+      addKnowledge({ title: $('#kTitle', m2.el).value.trim() || knowledgeTitle(text), text, source: 'Von Hand' });
+      m2.close();
+      renderKnow();
+      toast('Gespeichert – in allen Chats verfügbar');
+    };
+  };
   const addMem = () => { const v = q('#memAdd').value.trim(); if (v) { memory.remember(v); q('#memAdd').value = ''; renderMem(); } };
   q('#memAddBtn').onclick = addMem;
   q('#memAdd').onkeydown = (e) => { if (e.key === 'Enter') addMem(); };
@@ -2221,7 +2374,7 @@ function openSettings() {
   q('#sSearchBtn').onclick = runSearchTest;
   q('#sSearchTest').onkeydown = (e) => { if (e.key === 'Enter') runSearchTest(); };
 
-  q('#sExport').onclick = () => download(`ollama-dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ version: 1, chats, assistants, settings }, null, 2));
+  q('#sExport').onclick = () => download(`ollama-dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ version: 1, chats, assistants, settings, knowledge }, null, 2));
   q('#sImport').onclick = () => {
     const inp = document.createElement('input');
     inp.type = 'file';
@@ -2229,6 +2382,10 @@ function openSettings() {
     inp.onchange = async () => {
       try {
         const data = JSON.parse(await inp.files[0].text());
+        if (Array.isArray(data.knowledge)) {
+          for (const k of data.knowledge) if (k?.text && !knowledge.some((x) => x.id === k.id)) knowledge.push(k);
+          saveKnowledge();
+        }
         if (Array.isArray(data.assistants)) {
           for (const a of data.assistants) if (!assistants.some((x) => x.id === a.id)) assistants.push(a);
           saveAssistants();
