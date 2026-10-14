@@ -1,7 +1,9 @@
 # Skills – Anleitungen für deine KI
 
 Ein **Skill** ist eine Textdatei mit der Endung **`.skill`** in diesem Ordner. Darin steht eine Anleitung, wie die KI eine bestimmte Sache richtig macht.
-Bei jeder Nachricht lädt das Dashboard automatisch die Skills, die zu deiner Nachricht passen (über die **Auslöser-Wörter**), und gibt sie der KI mit.
+Bei jeder Nachricht **schaut die KI selbst in diesen Ordner**. Sie liest **Name und Beschreibung** aller Skills, wählt die passenden aus und nutzt deren Anleitung. Die **Auslöse-Wörter** dienen nur noch als Ersatz, falls die Auswahl einmal nicht klappt, oder wenn du in den Einstellungen „Nur über Auslöse-Wörter“ wählst.
+
+> **Wichtig:** Schreib eine **klare Beschreibung**: Wofür ist der Skill da, bei welchen Fragen hilft er? Daran erkennt die KI, wann sie ihn braucht.
 
 ## Eigenen Skill anlegen
 
@@ -29,8 +31,8 @@ always: false
 | Feld | Bedeutung |
 |---|---|
 | `name` | Anzeigename |
-| `description` | Kurze Beschreibung (nur für dich) |
-| `triggers` | Komma-getrennte Wörter oder Wortanfänge. Kommt eines davon in deiner Nachricht vor, wird der Skill geladen. `programmier` passt z. B. auch auf „programmiere“. |
+| `description` | **Wofür der Skill da ist** – danach wählt die KI ihn aus (z. B. „Freundliche, professionelle E-Mails und Briefe formulieren“) |
+| `triggers` | Ersatz-Auslöser: Komma-getrennte Wörter oder Wortanfänge (`programmier` passt auch auf „programmiere“) |
 | `always` | `true` = Skill wird **immer** geladen (sparsam nutzen, kostet Platz im Gedächtnis der KI) |
 | `priority` | Optional, Standard `1`. Höherer Wert = wird bei mehreren passenden Skills bevorzugt (z. B. `3`) |
 

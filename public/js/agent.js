@@ -350,6 +350,36 @@ export function intentHints(text, { newTopic = false } = {}) {
   return hints.length ? `\n\n(${hints.join(' ')})` : '';
 }
 
+// ---------- Skill-Auswahl durch die KI ----------
+// Die KI bekommt die Liste aller Skills (Titel + Beschreibung) und wählt selbst, welche helfen.
+export function skillRouterMessages(skills, text, prev = '') {
+  const list = skills.map((sk, i) => `${i + 1}. ${sk.name} – ${sk.description || sk.triggers.slice(0, 6).join(', ')}`).join('\n');
+  return [
+    { role: 'system', content: 'Du wählst passende Anleitungen (Skills) für einen KI-Assistenten aus. Antworte NUR mit den Nummern der Skills, die bei der Nachricht des Nutzers wirklich helfen – höchstens 3, durch Komma getrennt. Hilft keiner, antworte mit 0. Keine Erklärung, keine anderen Wörter.' },
+    { role: 'user', content: `Skills im Skill-Ordner:\n${list}\n\n${prev ? `Vorherige Nachricht (zum Zusammenhang): „${String(prev).slice(0, 300)}“\n` : ''}Nachricht des Nutzers: „${String(text).slice(0, 1200)}“\n\nNummern:` },
+  ];
+}
+
+export function parseSkillPick(answer, count) {
+  const clean = String(answer || '').replace(/<think>[\s\S]*?(<\/think>|$)/g, ' ');
+  const nums = [...clean.matchAll(/\d+/g)].map((m) => Number(m[0])).filter((n) => n >= 1 && n <= count);
+  if (!nums.length && !/\b0\b|kein|none/i.test(clean)) return null; // nicht verstanden -> Ersatz nutzen
+  return [...new Set(nums)].slice(0, 3);
+}
+
+// Gewählte Skills + immer aktive, mit Platzbudget für kleine Modelle
+export function skillsByIds(all, ids, disabled = []) {
+  const active = all.filter((s) => !disabled.includes(s.id));
+  const out = [];
+  let budget = 8000;
+  for (const s of [...active.filter((x) => x.always), ...ids.map((id) => active.find((x) => x.id === id)).filter((x) => x && !x.always)]) {
+    if (s.content.length > budget) continue;
+    budget -= s.content.length;
+    out.push(s);
+  }
+  return out;
+}
+
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
   return /(führ|ausführ|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));

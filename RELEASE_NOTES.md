@@ -13,6 +13,11 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.7
+
+- **Die KI wählt ihre Skills selbst**: Vor jeder Antwort schaut sie in den Skill-Ordner, liest Titel und Beschreibung aller Skills und nutzt die, die bei deiner Frage wirklich helfen. Das klappt auch ohne passende Auslöse-Wörter, etwa „Wie viel Trinkgeld bei 47 €?“ mit dem Mathe-Skill. Im Chat siehst du „Skills gelesen: …“.
+- Klappt die Auswahl einmal nicht, nimmt die App automatisch die Auslöse-Wörter. In den Einstellungen kannst du auch „Nur über Auslöse-Wörter“ wählen (schneller).
+
 ### Neu in 1.6
 
 - **Wissensspeicher**: Sag „merk dir das“, und die App speichert dauerhaft, **in allen Chats verfügbar**:

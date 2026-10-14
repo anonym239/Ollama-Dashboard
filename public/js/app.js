@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { local, localFs, web, skillsApi } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -69,6 +69,7 @@ const DEFAULT_SETTINGS = {
   lastAssistantId: 'default',
   memory: [],
   disabledSkills: [],
+  skillMode: 'ai',
   sidebarHidden: false,
   tts: { auto: false, voiceURI: '', rate: 1, pitch: 1 },
 };
@@ -801,6 +802,12 @@ const STATUS_TEXT = { pending: 'Wartet auf Erlaubnis', running: 'Läuft …', do
 function toolHtml(t) {
   const meta = TOOL_META[t.name] || { icon: 'zap', label: () => t.name };
   // Websuche läuft dezent im Hintergrund – nur eine kleine Zeile
+  if (t.name === 'select_skills') {
+    const running = t.status === 'running';
+    const names = t.args?.names || [];
+    const label = running ? 'Sieht im Skill-Ordner nach …' : names.length ? `Skills gelesen: ${escapeHtml(names.join(', '))}` : t.args?.fallback ? 'Skills über Auslöse-Wörter gewählt' : 'Kein Skill nötig';
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : 'file')} ${label}</span></div>`;
+  }
   if (t.name === 'remember_text') {
     return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research">${icon('save')} Dauerhaft gemerkt: ${escapeHtml((t.args?.titles || []).join(', '))} – in allen Chats verfügbar</span></div>`;
   }
@@ -1294,6 +1301,18 @@ async function generate(chat) {
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
       await runAction(chat, act, controller.signal);
     }
+    // Die KI schaut in den Skill-Ordner und wählt passende Anleitungen
+    if (settings.skillMode !== 'triggers' && skills.some((s) => !s.always) && lastUser?.content && !lastUser.skillPick && !controller.signal.aborted) {
+      const line = { id: uid(), role: 'tool', name: 'select_skills', status: 'running', args: {}, createdAt: Date.now() };
+      chat.messages.push(line);
+      if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
+      const ids = await pickSkillsWithAi(chat, lastUser, controller.signal);
+      if (ids) lastUser.skillPick = ids;
+      line.status = 'done';
+      line.args = { names: (ids || []).map((id) => skills.find((s) => s.id === id)?.name).filter(Boolean), fallback: !ids };
+      if (currentChatId === chat.id) updateMessageEl(line);
+      persist(chat);
+    }
     // Klingt die Frage nach aktuellen Infos? Dann selbst suchen – auch Modelle ohne Werkzeuge bekommen echte Ergebnisse
     if (settings.webSearch && lastUser?.content && needsWeb(lastUser.content) && !controller.signal.aborted) {
       const act = { name: 'web_search', args: { query: makeQuery(lastUser.content) } };
@@ -1340,7 +1359,10 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   if (!sysInfo && agentOn) sysInfo = await localFs.info().catch(() => null);
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   const intent = wantsExecution(lastUser?.content);
-  const activeSkills = selectSkills(skills, lastUser?.content, settings.disabledSkills);
+  // Von der KI gewählte Skills – sonst (oder als Ersatz) die Auslöse-Wörter
+  const activeSkills = lastUser?.skillPick
+    ? skillsByIds(skills, lastUser.skillPick, settings.disabledSkills)
+    : selectSkills(skills, lastUser?.content, settings.disabledSkills);
   const codeBlocks = collectCodeBlocks(chat.messages);
   const reuseIntent = agentOn && codeBlocks.length && wantsReuse(lastUser?.content);
   const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks, knowledge: knowledgeContext(lastUser?.content || '') }) }];
@@ -1360,6 +1382,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       else if (m.tool_calls?.length && !o.content) continue;
       messages.push(o);
     } else if (m.role === 'tool') {
+      if (m.name === 'select_skills') continue; // nur Anzeige
       const content = m.output || STATUS_TEXT[m.status] || '';
       if (useTools && m.native) messages.push({ role: 'tool', content, tool_name: m.name });
       else if (m.name === 'search_chats' || m.name === 'web_search') messages.push({ role: 'user', content: `[${m.name === 'web_search' ? 'Ergebnis der Websuche' : 'Erinnerungen aus früheren Chats'}]\n${content}` });
@@ -1904,6 +1927,41 @@ async function autoRemember(chat, lastUser) {
   return saved.filter(Boolean);
 }
 
+// Die KI sieht im Skill-Ordner nach und wählt die passenden Skills selbst
+async function pickSkillsWithAi(chat, lastUser, signal) {
+  const candidates = skills.filter((s) => !s.always && !settings.disabledSkills.includes(s.id));
+  if (!candidates.length || !lastUser?.content) return [];
+  const idx = chat.messages.indexOf(lastUser);
+  const prev = lastUser.topicStart ? '' : [...chat.messages.slice(0, idx)].reverse().find((m) => m.role === 'user')?.content || '';
+  const assistant = getAssistant(chat.assistantId);
+  const caps = await getCaps(chat.model);
+  const ctx = Number(assistant.numCtx) > 0 ? { num_ctx: Number(assistant.numCtx) } : {};
+  const body = {
+    model: chat.model, keep_alive: '30m', messages: skillRouterMessages(candidates, lastUser.content, prev),
+    options: { temperature: 0, num_predict: caps?.includes('thinking') ? 400 : 24, ...ctx },
+  };
+  if (caps?.includes('thinking')) body.think = false;
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), 25_000);
+  const onAbort = () => timeout.abort();
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    let r;
+    try { r = await ollama.chatOnce(body, timeout.signal); } catch (e) {
+      if (!/think/i.test(e.message) || timeout.signal.aborted) throw e;
+      delete body.think;
+      r = await ollama.chatOnce(body, timeout.signal);
+    }
+    const nums = parseSkillPick(r.message?.content, candidates.length);
+    return nums ? nums.map((n) => candidates[n - 1].id) : null;
+  } catch {
+    return null; // Ersatz: Auslöse-Wörter
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 function recentChatList(chat) {
   return chats.filter((c) => c.id !== chat.id && c.messages.length)
     .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6)
@@ -2221,6 +2279,9 @@ function openSettings() {
 
       <div><div class="section-title">Skills</div>
         <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Anleitungen für die KI als <b>.skill</b>-Dateien. Passende Skills werden automatisch geladen, je nachdem worum es in deiner Nachricht geht. Eigene Skills einfach in den Ordner legen (Vorlage: README.md im Ordner).</p>
+        <div class="field" style="margin-bottom:10px"><label>Skill-Auswahl</label><select class="input" id="sSkillMode">
+          <option value="ai" ${settings.skillMode !== 'triggers' ? 'selected' : ''}>Die KI wählt selbst (empfohlen) – liest Titel & Beschreibung aller Skills</option>
+          <option value="triggers" ${settings.skillMode === 'triggers' ? 'selected' : ''}>Nur über Auslöse-Wörter (schneller)</option></select></div>
         <div class="list" id="skillList"><div class="empty-state" style="padding:8px">Lade …</div></div>
         <div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm" id="skillOpen">${icon('folder')} Skills-Ordner öffnen</button><button class="btn btn-sm" id="skillReload">${icon('refresh')} Neu laden</button></div>
         <span class="hint" id="skillDir" style="font-size:12px;color:var(--text-faint)"></span></div>
@@ -2263,6 +2324,7 @@ function openSettings() {
   bind('#sThink', (t) => { settings.think = t.checked; });
   bind('#sAgent', (t) => { settings.agent = t.checked; });
   bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
+  bind('#sSkillMode', (t) => { settings.skillMode = t.value; });
   bind('#sPreview', (t) => { settings.autoPreview = t.checked; });
   q('#sTermOpen').onclick = async () => {
     try { const r = await local.openTerminal(); toast(r.ok ? 'KI-Terminal ist offen' : 'Kein Terminal-Fenster möglich', r.ok ? '' : 'error'); } catch (err) { toast(err.message, 'error'); }
