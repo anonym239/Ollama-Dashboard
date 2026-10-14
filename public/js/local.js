@@ -22,6 +22,12 @@ export const local = {
   openTerminal: () => call('/local/terminal/open', { method: 'POST' }),
 };
 
+export const updates = {
+  check: (force = false) => call('/local/update/check' + (force ? '?force=1' : '')),
+  install: () => call('/local/update/install', { method: 'POST' }),
+  status: () => call('/local/update/status'),
+};
+
 export const localFs = {
   info: () => call('/local/fs/info', { method: 'POST', body: {} }),
   stat: (path) => call('/local/fs/stat', { method: 'POST', body: { path } }),

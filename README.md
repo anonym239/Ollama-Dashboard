@@ -40,6 +40,8 @@ Ein modernes, cleanes KI-Chat-Dashboard für deine **lokalen KIs mit [Ollama](ht
 > **Hinweis:** Weil der Installer nicht kostenpflichtig signiert ist, kann Windows SmartScreen warnen. Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 > Das kleine Konsolenfenster ist der lokale Server. Lass es offen, solange du das Dashboard nutzt.
 
+**Updates:** Erscheint eine neue Version, zeigt die App oben „Update verfügbar“. Ein Klick auf **„Jetzt installieren“** reicht: Sie lädt das Setup, prüft die Prüfsumme, installiert und startet neu (ab Version 1.9.0).
+
 Alternativ gibt es eine **portable ZIP-Version** zum Entpacken und Starten, ohne Installation.
 
 ### Aus dem Quellcode (Windows, macOS, Linux)
@@ -77,6 +79,7 @@ Danach öffnet sich [http://localhost:3000](http://localhost:3000).
 - Zugriffe auf deinen PC (Dateien, Terminal) sind durch einen **geheimen Sitzungsschlüssel** sowie Host- und Origin-Prüfungen geschützt. Andere Webseiten können sie also nicht auslösen.
 - Standardmäßig fragt die KI **vor jeder Aktion** um Erlaubnis. Das lässt sich in den Einstellungen anpassen.
 - Ins Internet geht nur die **Websuche**, und nur wenn sie eingeschaltet ist. Die Suchanfragen gehen an den gewählten Suchanbieter.
+- Die **Update-Prüfung** fragt bei GitHub nach der neuesten Version (abschaltbar unter Einstellungen → Updates). Updates werden nur nach deinem Klick installiert und vorher per SHA-256-Prüfsumme geprüft.
 
 ## Einstellungen (Umgebungsvariablen)
 

@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
-import { local, localFs, web, skillsApi } from './local.js';
+import { local, localFs, web, skillsApi, updates } from './local.js';
 import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +71,7 @@ const DEFAULT_SETTINGS = {
   memory: [],
   disabledSkills: [],
   skillMode: 'ai',
+  updateCheck: true,
   sidebarHidden: false,
   tts: { auto: false, voiceURI: '', rate: 1, pitch: 1 },
 };
@@ -271,6 +272,7 @@ const avatarHtml = (a, cls = '', style = '') => `<div class="avatar ${cls}" styl
 let statusTimer = null;
 async function checkStatus() {
   clearTimeout(statusTimer);
+  if (updateState?.phase === 'restarting') return; // App startet gerade neu
   const wasOnline = online;
   try {
     const v = await ollama.version();
@@ -339,7 +341,7 @@ function renderBanner() {
     const dl = downloads.get('llama3.2');
     if (dl) html = banner('', 'download', 'Llama 3.2 wird heruntergeladen …', escapeHtml(dl.text || ''), `<div style="width:160px">${progressHtml(dl.pct)}</div>`);
   }
-  el.banner.innerHTML = html;
+  el.banner.innerHTML = updateBannerHtml() + html;
 }
 
 const banner = (type, ico, title, text, actions) =>
@@ -350,6 +352,9 @@ el.banner.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-banner]');
   if (!b) return;
   const action = b.dataset.banner;
+  if (action === 'update-install' || action === 'update-retry') startUpdate();
+  if (action === 'update-notes') showUpdateNotes();
+  if (action === 'update-later') { updateHidden = true; updateState = null; renderBanner(); }
   if (action === 'retry') { b.disabled = true; await checkStatus(); }
   if (action === 'settings') openSettings();
   if (action === 'models') openModels();
@@ -751,6 +756,113 @@ function skillPickHtml(t, i, chat) {
   const a = getAssistant(chat.assistantId);
   return `<div class="msg ai pending-ai" id="m-${t.id}" data-id="${t.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main"><div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(chat.model || '')}</span></div>${skillLine(t)}</div></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Updates: neue Version anzeigen, mit einem Klick installieren, App startet neu
+// ---------------------------------------------------------------------------
+let updateInfo = null;
+let updateState = null; // { phase: download|verify|restarting|error, pct, version, error }
+let updateHidden = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* egal */ } };
+
+async function checkForUpdate({ force = false, quiet = true } = {}) {
+  try {
+    updateInfo = await updates.check(force);
+  } catch (err) {
+    if (!quiet) toast(`Update-Prüfung fehlgeschlagen: ${err.message}`, 'error');
+    return null;
+  }
+  const was = lsGet('od.updating');
+  if (was) {
+    lsSet('od.updating', null);
+    if (was === updateInfo.current) toast(`Aktualisiert auf v${updateInfo.current}`);
+  }
+  if (!quiet) toast(updateInfo.newer ? `Neue Version v${updateInfo.latest} verfügbar` : `Du hast die neueste Version (v${updateInfo.current})`);
+  if (!quiet && updateInfo.newer) updateHidden = false;
+  renderBanner();
+  return updateInfo;
+}
+
+function updateBannerHtml() {
+  const s = updateState;
+  if (s?.phase === 'error') {
+    return banner('error', 'download', 'Update fehlgeschlagen', escapeHtml(s.error || ''),
+      `<button class="btn btn-sm btn-primary" data-banner="update-retry">${icon('refresh')} Erneut versuchen</button>
+       ${updateInfo?.url ? `<a class="btn btn-sm" href="${escapeHtml(updateInfo.url)}" target="_blank" rel="noopener">${icon('external')} Download-Seite</a>` : ''}
+       <button class="btn btn-sm" data-banner="update-later">Schließen</button>`);
+  }
+  if (s) {
+    const text = s.phase === 'download' ? `Wird heruntergeladen … ${s.pct ?? 0} %` : s.phase === 'verify' ? 'Wird geprüft …' : 'Wird installiert – die App startet gleich neu …';
+    return banner('', s.phase === 'restarting' ? 'loader' : 'download', `Update auf v${escapeHtml(s.version || '')}`, text,
+      `<div style="width:160px">${progressHtml(s.phase === 'download' ? s.pct : null)}</div>`);
+  }
+  const u = updateInfo;
+  if (!u?.newer || updateHidden) return '';
+  const first = (String(u.notes).match(/\*\*([^*]{3,120})\*\*/) || [])[1];
+  return banner('', 'download', `Update verfügbar: v${escapeHtml(u.latest)}`, `Du hast v${escapeHtml(u.current)}.${first ? ` Neu: ${escapeHtml(first.replace(/[:.]\s*$/, ''))}` : ''}`,
+    `${u.canInstall ? `<button class="btn btn-sm btn-primary" data-banner="update-install">${icon('download')} Jetzt installieren</button>`
+      : `<a class="btn btn-sm btn-primary" href="${escapeHtml(u.url)}" target="_blank" rel="noopener">${icon('external')} Herunterladen</a>`}
+     ${u.notes ? '<button class="btn btn-sm" data-banner="update-notes">Was ist neu?</button>' : ''}
+     <button class="btn btn-sm" data-banner="update-later">Später</button>`);
+}
+
+function showUpdateNotes() {
+  const u = updateInfo;
+  if (!u) return;
+  const m = openModal({
+    title: `Neu in v${escapeHtml(u.latest)}`,
+    body: `<div class="md">${renderMarkdown(u.notes || 'Keine Beschreibung.')}</div>`,
+    foot: `<button class="btn" data-close>Schließen</button>${u.canInstall ? `<button class="btn btn-primary" data-upd-go>${icon('download')} Jetzt installieren</button>` : `<a class="btn btn-primary" href="${escapeHtml(u.url)}" target="_blank" rel="noopener">${icon('external')} Herunterladen</a>`}`,
+  });
+  const go = $('[data-upd-go]', m.el);
+  if (go) go.onclick = () => { m.close(); startUpdate(); };
+}
+
+async function startUpdate() {
+  if (busy) { toast('Warte bitte, bis die KI mit ihrer Antwort fertig ist.', 'error'); return; }
+  if (!updateInfo?.canInstall) return;
+  updateState = { phase: 'download', pct: 0, version: updateInfo.latest };
+  renderBanner();
+  try {
+    await updates.install();
+  } catch (err) {
+    updateState = { phase: 'error', error: err.message };
+    renderBanner();
+    return;
+  }
+  lsSet('od.updating', updateInfo.latest);
+  pollUpdate();
+}
+
+async function pollUpdate() {
+  let s;
+  try { s = await updates.status(); } catch { waitForRestart(); return; }
+  if (s.phase === 'error') { lsSet('od.updating', null); updateState = { phase: 'error', error: s.error }; renderBanner(); return; }
+  updateState = { ...s, pct: s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : null };
+  renderBanner();
+  if (s.phase === 'restarting') { waitForRestart(); return; }
+  setTimeout(pollUpdate, 400);
+}
+
+// Alte App beendet sich, Setup läuft, neue App startet -> Seite neu laden
+async function waitForRestart() {
+  updateState = { ...updateState, phase: 'restarting' };
+  renderBanner();
+  clearTimeout(statusTimer);
+  let down = false;
+  const until = Date.now() + 5 * 60_000;
+  while (Date.now() < until) {
+    await sleep(1000);
+    try {
+      const r = await fetch('/favicon.svg', { cache: 'no-store' });
+      if (r.ok && down) { location.reload(); return; }
+    } catch { down = true; }
+  }
+  updateState = { phase: 'error', error: 'Die neue Version hat sich nicht gemeldet. Starte das Dashboard bitte über das Startmenü.' };
+  renderBanner();
 }
 
 // ---------------------------------------------------------------------------
@@ -2497,6 +2609,11 @@ function openSettings() {
         </div>
         <div><button class="btn btn-sm" id="sTtsTest">${icon('volume')} Stimme testen</button></div></div>
 
+      <div><div class="section-title">Updates</div>
+        <div class="row" style="align-items:center;flex-wrap:wrap;gap:10px"><span id="sVersion" style="font-size:14px">Version …</span>
+        <button class="btn btn-sm" id="sUpdCheck">${icon('refresh')} Nach Updates suchen</button></div>
+        ${sw('sUpdAuto', settings.updateCheck, 'Automatisch nach Updates suchen', 'Beim Start und alle paar Stunden. Neue Versionen erscheinen oben mit „Jetzt installieren“.')}</div>
+
       <div><div class="section-title">Daten</div>
         <div class="row" style="flex-wrap:wrap"><button class="btn btn-sm" id="sExport">${icon('download')} Alles exportieren</button>
         <button class="btn btn-sm" id="sImport">Importieren</button>
@@ -2518,6 +2635,18 @@ function openSettings() {
   bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
   bind('#sSkillMode', (t) => { settings.skillMode = t.value; });
   bind('#sPreview', (t) => { settings.autoPreview = t.checked; });
+  bind('#sUpdAuto', (t) => { settings.updateCheck = t.checked; });
+  const showVersion = (v) => { if (v) q('#sVersion').innerHTML = `Installiert: <b>v${escapeHtml(v)}</b>${updateInfo?.newer ? ` · neu: <b>v${escapeHtml(updateInfo.latest)}</b>` : ''}`; };
+  showVersion(updateInfo?.current || localStatus?.appVersion);
+  if (!updateInfo && !localStatus?.appVersion) local.status().then((st) => showVersion(st.appVersion)).catch(() => {});
+  q('#sUpdCheck').onclick = async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    const u = await checkForUpdate({ force: true, quiet: false });
+    b.disabled = false;
+    if (u) showVersion(u.current);
+    if (u?.newer) { m.close(); showUpdateNotes(); }
+  };
   q('#sTermOpen').onclick = async () => {
     try { const r = await local.openTerminal(); toast(r.ok ? 'KI-Terminal ist offen' : 'Kein Terminal-Fenster möglich', r.ok ? '' : 'error'); } catch (err) { toast(err.message, 'error'); }
   };
@@ -2722,5 +2851,8 @@ async function init() {
   refreshSkills();
   await checkStatus();
   renderAll();
+  // Neue Version? Beim Start und dann alle 6 Stunden nachsehen
+  if (settings.updateCheck || lsGet('od.updating')) setTimeout(() => checkForUpdate(), 2500);
+  setInterval(() => { if (settings.updateCheck && !updateState) checkForUpdate(); }, 6 * 3600_000);
 }
 init();

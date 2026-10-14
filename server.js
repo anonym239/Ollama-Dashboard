@@ -19,6 +19,7 @@ const SKILLS_DIR = process.env.SKILLS_DIR || path.join(__dirname, 'skills');
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const IS_WIN = process.platform === 'win32';
 let ollamaChild = null;
+let pageServed = false;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -1008,6 +1009,125 @@ function loadSkills() {
     .filter((x) => x && x.content);
 }
 
+// ---------- Updates: neue Version auf GitHub finden, herunterladen, prüfen, installieren, neu starten ----------
+const UPDATE_REPO = 'anonym239/Ollama-Dashboard';
+const APP_VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0'; } catch { return '0.0.0'; }
+})();
+const IS_PACKAGED = (() => { try { return require('node:sea').isSea(); } catch { return false; } })();
+let updateCache = null;
+let updateJob = { phase: 'idle' };
+
+function newerVersion(a, b) {
+  const pa = String(a || '').replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '').replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  }
+  return false;
+}
+
+// Nur die Abschnitte "### Neu in X" der Versionen, die neuer sind als die installierte
+function notesSince(body, current) {
+  const parts = String(body || '').split(/^(?=###\s+Neu in\s+)/m);
+  const out = parts.filter((p) => {
+    const m = p.match(/^###\s+Neu in\s+v?([\d.]+)/);
+    return m && newerVersion(m[1], current);
+  });
+  return out.join('\n').trim().slice(0, 6000);
+}
+
+// Für alle Benutzer installiert (Programme-Ordner)? Dann braucht das Update Administratorrechte
+const isProgramFiles = (p) => [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramW6432]
+  .filter(Boolean).some((d) => String(p).toLowerCase().startsWith(d.toLowerCase() + '\\'));
+
+// Automatisch installieren geht nur mit der installierten Windows-Version (Setup)
+const canSelfUpdate = () => IS_WIN && IS_PACKAGED && fs.existsSync(path.join(path.dirname(process.execPath), 'unins000.exe'));
+
+async function checkUpdate(force = false) {
+  if (!force && updateCache && Date.now() - updateCache.at < 30 * 60_000) return updateCache.data;
+  const r = await fetch(`${process.env.OD_UPDATE_API || 'https://api.github.com'}/repos/${UPDATE_REPO}/releases/latest`, {
+    headers: { 'User-Agent': 'Ollama-Dashboard', Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!r.ok) throw new Error(`GitHub antwortet nicht (${r.status})`);
+  const j = await r.json();
+  const latest = String(j.tag_name || '').replace(/^v/, '');
+  const assets = j.assets || [];
+  const setup = assets.find((a) => /^OllamaDashboard-Setup-.*\.exe$/i.test(a.name));
+  const sums = assets.find((a) => a.name === 'SHA256SUMS.txt');
+  const data = {
+    current: APP_VERSION, latest, newer: newerVersion(latest, APP_VERSION),
+    url: j.html_url, published: j.published_at, notes: notesSince(j.body, APP_VERSION),
+    canInstall: canSelfUpdate() && !!setup && !!sums, size: setup?.size || 0,
+  };
+  updateCache = { at: Date.now(), data, setup, sums };
+  return data;
+}
+
+async function downloadTo(url, file, onProgress) {
+  const r = await fetch(url, { headers: { 'User-Agent': 'Ollama-Dashboard' }, signal: AbortSignal.timeout(15 * 60_000) });
+  if (!r.ok || !r.body) throw new Error(`Download fehlgeschlagen (${r.status})`);
+  const hash = crypto.createHash('sha256');
+  const out = fs.createWriteStream(file);
+  let received = 0;
+  try {
+    for await (const chunk of r.body) {
+      hash.update(chunk);
+      received += chunk.length;
+      onProgress(received);
+      if (!out.write(chunk)) await new Promise((ok) => out.once('drain', ok));
+    }
+  } finally {
+    await new Promise((ok) => out.end(ok));
+  }
+  return hash.digest('hex');
+}
+
+// Kleines PowerShell-Skript: wartet, bis die App beendet ist, installiert still und startet die neue Version
+function updaterScript({ setupFile, exe, pid, log, allUsers = false }) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const dir = path.win32.dirname(exe);
+  return [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    `Wait-Process -Id ${pid} -Timeout 30`,
+    'Start-Sleep -Milliseconds 500',
+    `$p = Start-Process -FilePath ${q(setupFile)} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/NOCANCEL','/SP-','${allUsers ? '/ALLUSERS' : '/CURRENTUSER'}',${q(`/LOG="${log}"`)} -Wait -PassThru`,
+    '$env:OD_AFTER_UPDATE = "1"',
+    `Start-Process -FilePath ${q(exe)} -WorkingDirectory ${q(dir)}`,
+    `Remove-Item -LiteralPath ${q(setupFile)} -Force`,
+    'Remove-Item -LiteralPath $PSCommandPath -Force',
+  ].join('\r\n');
+}
+
+async function installUpdate() {
+  if (['download', 'verify', 'restarting'].includes(updateJob.phase)) return updateJob;
+  const info = await checkUpdate(true);
+  if (!info.newer) throw new Error('Du hast schon die neueste Version.');
+  if (!info.canInstall) throw new Error('Automatische Updates gehen nur mit der installierten Windows-Version (Setup).');
+  const { setup, sums } = updateCache;
+  updateJob = { phase: 'download', version: info.latest, received: 0, total: setup.size };
+  (async () => {
+    const dir = path.join(require('os').tmpdir(), 'ollama-dashboard-update');
+    fs.mkdirSync(dir, { recursive: true });
+    const setupFile = path.join(dir, setup.name);
+    const sumsText = await (await fetch(sums.browser_download_url, { headers: { 'User-Agent': 'Ollama-Dashboard' }, signal: AbortSignal.timeout(30_000) })).text();
+    const expected = sumsText.split(/\r?\n/).map((l) => l.trim().split(/\s+/)).find((x) => x[1] === setup.name)?.[0]?.toLowerCase();
+    if (!expected) throw new Error('Keine Prüfsumme für das Update gefunden.');
+    const got = await downloadTo(setup.browser_download_url, setupFile, (n) => { updateJob.received = n; });
+    updateJob.phase = 'verify';
+    if (got !== expected) { fs.rmSync(setupFile, { force: true }); throw new Error('Prüfsumme stimmt nicht – Update abgebrochen.'); }
+    const script = path.join(dir, 'update.ps1');
+    fs.writeFileSync(script, '﻿' + updaterScript({ setupFile, exe: process.execPath, pid: process.pid, log: path.join(dir, 'setup.log'), allUsers: isProgramFiles(process.execPath) }), 'utf8');
+    spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script], {
+      detached: true, stdio: 'ignore', windowsHide: true,
+    }).unref();
+    updateJob.phase = 'restarting';
+    setTimeout(() => process.exit(0), 1500);
+  })().catch((e) => { updateJob = { phase: 'error', error: e.message }; });
+  return updateJob;
+}
+
 async function handleLocal(req, res) {
   if (req.headers['x-dashboard-token'] !== TOKEN) return json(res, 403, { error: 'Nicht erlaubt' });
   const route = new URL(req.url, 'http://x').pathname;
@@ -1020,10 +1140,20 @@ async function handleLocal(req, res) {
         version,
         installed: !!installed || !!version,
         platform: process.platform,
+        appVersion: APP_VERSION,
         ollamaUrl: DEFAULT_OLLAMA,
         home: require('os').homedir(),
         shell: IS_WIN ? 'cmd.exe' : (process.env.SHELL || '/bin/sh'),
       });
+    }
+    if (route === '/local/update/check' && req.method === 'GET') {
+      return json(res, 200, await checkUpdate(new URL(req.url, 'http://x').searchParams.has('force')));
+    }
+    if (route === '/local/update/install' && req.method === 'POST') {
+      return json(res, 200, await installUpdate());
+    }
+    if (route === '/local/update/status' && req.method === 'GET') {
+      return json(res, 200, updateJob);
     }
     if (route === '/local/ollama/start' && req.method === 'POST') {
       try {
@@ -1103,7 +1233,7 @@ function serveStatic(req, res) {
     return res.end();
   }
   fs.readFile(file, (err, data) => {
-    if (!err && file.endsWith('index.html')) data = Buffer.from(String(data).replace('{{TOKEN}}', TOKEN));
+    if (!err && file.endsWith('index.html')) { data = Buffer.from(String(data).replace('{{TOKEN}}', TOKEN)); pageServed = true; }
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('Nicht gefunden');
@@ -1128,7 +1258,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
+module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, updaterScript, APP_VERSION };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';
@@ -1139,7 +1269,11 @@ server.listen(PORT, HOST, () => {
   console.log(`  ➜  Ollama:  ${DEFAULT_OLLAMA}`);
   console.log('\n  Dieses Fenster offen lassen, solange du das Dashboard nutzt.');
   console.log('  Schließen = Dashboard beenden.\n');
-  if (!process.env.NO_OPEN) openBrowser(`http://${shown}:${PORT}`);
+  if (process.env.OD_AFTER_UPDATE) {
+    // Nach einem Update lädt sich die offene Seite selbst neu – nur wenn keine kommt, den Browser öffnen
+    delete process.env.OD_AFTER_UPDATE;
+    setTimeout(() => { if (!pageServed && !process.env.NO_OPEN) openBrowser(`http://${shown}:${PORT}`); }, 10_000);
+  } else if (!process.env.NO_OPEN) openBrowser(`http://${shown}:${PORT}`);
 });
 
 server.on('error', async (e) => {

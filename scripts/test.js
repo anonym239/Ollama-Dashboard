@@ -87,6 +87,43 @@ async function test(name, fn) {
     assert.strictEqual(r.content, 'Hallo äöü ✓');
   });
 
+  console.log('\nUpdates');
+  await test('Versionen vergleichen', () => {
+    assert.ok(srv.newerVersion('1.10.0', '1.9.9'));
+    assert.ok(srv.newerVersion('v2.0.0', '1.99.0'));
+    assert.ok(!srv.newerVersion('1.8.2', '1.8.2'));
+    assert.ok(!srv.newerVersion('1.8.1', '1.8.2'));
+  });
+  await test('Nur neue Abschnitte der Release-Notes', () => {
+    const body = '## Titel\n\n### Neu in 1.9.0\n- neu A\n\n### Neu in 1.8.2\n- neu B\n\n### Neu in 1.8\n- alt\n';
+    const n = srv.notesSince(body, '1.8.2');
+    assert.ok(n.includes('neu A') && !n.includes('neu B') && !n.includes('alt'), n);
+  });
+  await test('Version wird mitgeliefert', () => assert.match(srv.APP_VERSION, /^\d+\.\d+\.\d+$/));
+  if (IS_WIN) {
+    // Echtes Update-Skript mit einem Schein-Setup und einer Schein-App ausführen
+    await test('Update-Skript: wartet, installiert still, startet neu', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-upd-'));
+      const appDir = path.join(dir, 'App Ordner');
+      fs.mkdirSync(appDir);
+      const setupFile = path.join(dir, 'Setup.cmd');
+      const exe = path.join(appDir, 'App.cmd');
+      fs.writeFileSync(setupFile, `@echo %*> "${path.join(dir, 'setup-args.txt')}"\r\n`);
+      fs.writeFileSync(exe, `@echo %OD_AFTER_UPDATE%> "${path.join(dir, 'started.txt')}"\r\n`);
+      const dummy = spawn('cmd.exe', ['/c', 'ping -n 3 127.0.0.1 >nul'], { stdio: 'ignore' });
+      const script = path.join(dir, 'update.ps1');
+      fs.writeFileSync(script, '﻿' + srv.updaterScript({ setupFile, exe, pid: dummy.pid, log: path.join(dir, 'setup.log') }), 'utf8');
+      await new Promise((ok) => spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { stdio: 'ignore' }).on('exit', ok));
+      for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'started.txt')); i++) await new Promise((r) => setTimeout(r, 250));
+      const args = fs.readFileSync(path.join(dir, 'setup-args.txt'), 'utf8');
+      assert.match(args, /\/VERYSILENT/);
+      assert.match(args, /\/LOG="/);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), '1');
+      assert.ok(!fs.existsSync(setupFile), 'Setup wurde nicht aufgeräumt');
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  }
+
   console.log('\nSichtbares KI-Terminal');
   // Wie das echte Fenster, nur ohne Bildschirm: Skript direkt starten
   fs.rmSync(srv.TERM_DIR, { recursive: true, force: true });

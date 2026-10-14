@@ -13,6 +13,16 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.9.0
+
+- **Automatische Updates:** Gibt es eine neue Version, erscheint oben „Update verfügbar“. Ein Klick auf **„Jetzt installieren“** reicht: Die App lädt das Setup herunter, prüft die Prüfsumme, installiert still im Hintergrund, startet neu und lädt die Seite selbst neu.
+- „Was ist neu?“ zeigt nur die Neuerungen seit deiner Version.
+- **Einstellungen → Updates:** installierte Version, „Nach Updates suchen“ und automatische Prüfung an/aus (beim Start und alle 6 Stunden).
+- Die Portable-Version zeigt einen Download-Knopf, weil sie sich nicht selbst installieren kann.
+- **Chat-Blasen:** Kurze Nachrichten wie „hallo“ stehen wieder in einer Zeile. Der Text geht erst in die Breite und bricht erst bei längeren Texten um.
+
+> Automatische Updates gibt es ab Version 1.9.0. Diese Version einmal von Hand installieren, danach geht es per Klick.
+
 ### Neu in 1.8.2
 
 - **„Skills gelesen“ steht jetzt direkt unter dem Namen des Assistenten**, nicht mehr als eigene Zeile darüber. Während die KI im Skill-Ordner nachsieht, erscheint der Assistent sofort mit „Sieht im Skill-Ordner nach …“. Braucht sie keinen Skill, wird keine Zeile angezeigt.
