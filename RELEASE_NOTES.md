@@ -13,6 +13,10 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.8.2
+
+- **„Skills gelesen“ steht jetzt direkt unter dem Namen des Assistenten**, nicht mehr als eigene Zeile darüber. Während die KI im Skill-Ordner nachsieht, erscheint der Assistent sofort mit „Sieht im Skill-Ordner nach …“. Braucht sie keinen Skill, wird keine Zeile angezeigt.
+
 ### Neu in 1.8.1
 
 - **Nachfragen werden richtig verstanden:** „ok, und was ist das allerneueste vom Upload?“ gilt jetzt als Nachfrage und nicht mehr als neues Thema. Suchbegriffe und gefundene Treffer (z. B. YouTube-Videos) zählen mit zum Gesprächsthema.

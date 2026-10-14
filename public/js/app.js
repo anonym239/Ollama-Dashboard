@@ -690,6 +690,7 @@ function messageHtml(m, i, chat, isLastAi) {
         <button class="icon-btn" data-action="edit" title="Bearbeiten">${icon('edit')}</button>
       </div></div></div>`;
   }
+  if (m.role === 'tool' && m.name === 'select_skills') return skillPickHtml(m, i, chat);
   if (m.role === 'tool') return toolHtml(m);
 
   const streaming = busy?.msgId === m.id;
@@ -701,9 +702,11 @@ function messageHtml(m, i, chat, isLastAi) {
   if (!streaming && !text.trim() && !thinking && !m.error && m.tool_calls?.length) return '';
   const a = getAssistant(m.assistantId);
   const sources = collectSources(chat, i);
+  const pick = skillPickFor(chat, i);
   return `<div class="msg ai ${isLastAi ? 'last' : ''}" id="m-${m.id}" data-id="${m.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main">
-      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${m.skills?.length ? `<span class="skill-tag" title="Genutzte Skills">${escapeHtml(m.skills.join(', '))}</span>` : ''}${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
+      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${m.skills?.length && !(pick && skillLine(pick, m)) ? `<span class="skill-tag" title="Genutzte Skills">${escapeHtml(m.skills.join(', '))}</span>` : ''}${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
+      ${pick ? skillLine(pick, m) : ''}
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
       ${!streaming && m.content ? linkPreviewsHtml(m.content, sources) : ''}
@@ -714,6 +717,40 @@ function messageHtml(m, i, chat, isLastAi) {
         ${m.stats ? `<span class="msg-stats">${statsText(m.stats)}</span>` : ''}
       </div>`}
     </div></div>`;
+}
+
+// Skill-Auswahl erscheint direkt unter dem Namen der Antwort ("Skills gelesen: …")
+function skillLine(t, m) {
+  const running = t.status === 'running';
+  const names = t.args?.names?.length ? t.args.names : t.args?.fallback ? m?.skills || [] : [];
+  if (!running && !names.length) return ''; // kein Skill nötig -> nichts anzeigen
+  const label = running ? 'Sieht im Skill-Ordner nach …' : `Skills gelesen: ${escapeHtml(names.join(', '))}`;
+  return `<div class="msg-skills ${running ? 'running' : ''}">${icon(running ? 'loader' : 'file')}<span>${label}</span></div>`;
+}
+
+// Gehört zu dieser Antwort eine Skill-Auswahl? (nur bei der ersten Antwort nach der Nutzer-Nachricht)
+function skillPickFor(chat, i) {
+  let pick = null;
+  for (let k = i - 1; k >= 0; k--) {
+    const x = chat.messages[k];
+    if (x.role === 'user') return pick;
+    if (x.role === 'assistant' && (busy?.msgId === x.id || x.error || x.thinking || splitThink(x.content).text.trim() || !x.tool_calls?.length)) return null;
+    if (x.role === 'tool' && x.name === 'select_skills') pick = x;
+  }
+  return pick;
+}
+
+// Solange noch keine Antwort da ist: Platzhalter mit Name + Skill-Zeile, danach steht die Zeile in der Antwort
+function skillPickHtml(t, i, chat) {
+  for (let k = i + 1; k < chat.messages.length; k++) {
+    const x = chat.messages[k];
+    if (x.role === 'user') break;
+    if (x.role === 'assistant') return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}" style="display:none"></div>`;
+  }
+  if (!busy || busy.chatId !== chat.id) return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}">${skillLine(t)}</div>`;
+  const a = getAssistant(chat.assistantId);
+  return `<div class="msg ai pending-ai" id="m-${t.id}" data-id="${t.id}">${avatarHtml(a, 'msg-avatar')}
+    <div class="msg-main"><div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(chat.model || '')}</span></div>${skillLine(t)}</div></div>`;
 }
 
 // ---------------------------------------------------------------------------
