@@ -28,6 +28,7 @@ fs.mkdirSync(app, { recursive: true });
 
 // 1) Oberfläche & Dateien kopieren
 fs.cpSync(path.join(root, 'public'), path.join(app, 'public'), { recursive: true });
+fs.cpSync(path.join(root, 'skills'), path.join(app, 'skills'), { recursive: true });
 for (const f of ['README.md', 'LICENSE']) {
   if (fs.existsSync(path.join(root, f))) fs.copyFileSync(path.join(root, f), path.join(app, f));
 }

@@ -572,3 +572,4 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .ti-orb, .ti-orb::after, .ti-orb svg, .ti-label { animation: none; } .ti-label { color: var(--text-soft); background: none; } }
 .msg:has(.think-ind) .live-meta { display: none; }
+.skill-tag { font-size: 11px; font-weight: 500; color: var(--accent-text); background: var(--accent-soft); padding: 1px 7px; border-radius: 99px; }

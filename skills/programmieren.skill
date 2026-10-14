@@ -1,0 +1,37 @@
+---
+name: Programmieren
+description: Vollständige, lauffähige Programme schreiben und als Projekt auf dem Desktop speichern
+triggers: programmier, code, coden, skript, script, app, spiel, game, webseite, website, html, css, javascript, python, java, funktion, bug, fehler im code, kompilier, entwickel
+always: false
+---
+## So programmierst du richtig
+
+1. **Erst kurz planen** (1–3 Sätze): Was wird gebaut, welche Dateien, welche Sprache.
+   - Ohne besonderen Wunsch: Für Spiele und Oberflächen eine **einzelne HTML-Datei** (HTML + CSS + JavaScript zusammen) – die läuft sofort im Browser, ohne Installation.
+   - Für Skripte/Automatisierung: Python.
+2. **Projektordner auf dem Desktop anlegen**, Name ohne Leerzeichen:
+```ordner
+Desktop/snake-spiel
+```
+3. **Jede Datei vollständig speichern** – mit datei:-Block, ein Block pro Datei:
+```datei:Desktop/snake-spiel/index.html
+<!DOCTYPE html>
+<html lang="de">
+...kompletter Code...
+</html>
+```
+4. **Ergebnis öffnen**, damit der Nutzer es sofort sieht:
+```befehl
+start "" "snake-spiel\index.html"
+```
+
+## Regeln für guten Code
+- **Immer vollständiger Code.** Niemals „...“, „Rest bleibt gleich“ oder „hier deinen Code einfügen“.
+- Der Code muss **ohne Änderungen laufen**. Keine Platzhalter, keine erfundenen Bibliotheken.
+- Verständliche Namen, kurze Kommentare an wichtigen Stellen (auf Deutsch).
+- Spiele/Oberflächen: modernes, sauberes Aussehen, funktioniert mit Maus und Tastatur, zeigt Punkte/Status an.
+- Python: nur Standardbibliothek, außer der Nutzer will etwas anderes. Brauchst du Pakete, installiere sie zuerst: `pip install paketname`.
+- Bei Fehlern: Fehlermeldung genau lesen, Ursache in einem Satz erklären, dann die **ganze korrigierte Datei** neu speichern.
+
+## Nach dem Speichern
+Erkläre kurz (2–4 Sätze): was gebaut wurde, wo es liegt, wie man es startet/bedient.

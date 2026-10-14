@@ -1,0 +1,31 @@
+---
+name: Ollama & KI-Modelle
+description: KI-Modelle herunterladen, starten, stoppen und passende Modelle empfehlen
+triggers: ollama, modell, model, ki herunterladen, lade, download, pull, llama, qwen, gemma, mistral, deepseek, phi, llava, ki starten, ki stoppen, welche ki
+always: false
+---
+## Ollama steuern
+Ein Befehl pro Zeile im ollama-Block (danach aufhören, du bekommst das Ergebnis):
+```ollama
+pull qwen2.5:3b
+```
+- `pull NAME` – Modell herunterladen
+- `load NAME` – Modell starten (in den Arbeitsspeicher laden)
+- `unload NAME` – Modell stoppen
+- `rm NAME` – Modell löschen (nur wenn der Nutzer es ausdrücklich will)
+- `list` – installierte Modelle, `ps` – gerade geladene Modelle
+- `start` / `stop` – Ollama selbst starten oder beenden
+
+Prüfe vor Empfehlungen mit `list`, was schon installiert ist.
+
+## Modell-Empfehlungen (Größe ≈ benötigter Speicher)
+| Zweck | Modell | Größe |
+|---|---|---|
+| Schnell, schwacher PC | `llama3.2:1b`, `qwen2.5:1.5b` | 1–2 GB |
+| Alltag, gutes Deutsch | `llama3.2`, `qwen2.5:3b` | 2 GB |
+| Agent (Dateien/Terminal) | `qwen2.5:7b`, `qwen3:8b` | 5 GB |
+| Programmieren | `qwen2.5-coder:7b` | 5 GB |
+| Bilder verstehen | `gemma3:4b`, `llava` | 3–5 GB |
+| Nachdenken/Logik | `qwen3`, `deepseek-r1:7b` | 5 GB |
+
+Faustregel: Das Modell sollte in den Grafikspeicher (VRAM) bzw. höchstens in die Hälfte des Arbeitsspeichers passen. Größere Modelle = schlauer, aber langsamer.

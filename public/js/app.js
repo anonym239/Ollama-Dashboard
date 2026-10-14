@@ -4,8 +4,8 @@ import { chatsDb, loadJson, loadList, saveJson, uid } from './store.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
-import { local, localFs, web } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution } from './agent.js';
+import { local, localFs, web, skillsApi } from './local.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -66,6 +66,7 @@ const DEFAULT_SETTINGS = {
   lastModel: '',
   lastAssistantId: 'default',
   memory: [],
+  disabledSkills: [],
   sidebarHidden: false,
   tts: { auto: false, voiceURI: '', rate: 1, pitch: 1 },
 };
@@ -112,6 +113,7 @@ let settings = loadJson('od.settings', DEFAULT_SETTINGS);
 settings.tts = { ...DEFAULT_SETTINGS.tts, ...settings.tts };
 settings.searchKeys = { ...DEFAULT_SETTINGS.searchKeys, ...settings.searchKeys };
 if (!Array.isArray(settings.memory)) settings.memory = [];
+if (!Array.isArray(settings.disabledSkills)) settings.disabledSkills = [];
 let assistants = loadList('od.assistants', DEFAULT_ASSISTANTS);
 if (!assistants.length) assistants = structuredClone(DEFAULT_ASSISTANTS);
 
@@ -690,7 +692,7 @@ function messageHtml(m, i, chat, isLastAi) {
   const sources = collectSources(chat, i);
   return `<div class="msg ai ${isLastAi ? 'last' : ''}" id="m-${m.id}" data-id="${m.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main">
-      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
+      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${m.skills?.length ? `<span class="skill-tag" title="Genutzte Skills">${escapeHtml(m.skills.join(', '))}</span>` : ''}${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
       ${streaming ? '' : `<div class="msg-actions">
@@ -1179,6 +1181,7 @@ async function generate(chat) {
   const isFirst = chat.messages.filter((m) => m.role === 'user').length === 1;
   // Merkt sich, was in dieser Antwort schon ausgeführt wurde (Schutz vor Endlosschleifen)
   const turn = { done: new Set() };
+  await refreshSkills(); // neue/geänderte .skill-Dateien sofort nutzen
   try {
     const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
     if (lastUser?.content && MEMORY_INTENT.test(lastUser.content) && chats.length > 1) {
@@ -1226,7 +1229,8 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   if (!sysInfo && agentOn) sysInfo = await localFs.info().catch(() => null);
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   const intent = wantsExecution(lastUser?.content);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat) }) }];
+  const activeSkills = selectSkills(skills, lastUser?.content, settings.disabledSkills);
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
   for (const m of chat.messages) {
@@ -1254,7 +1258,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     toast(`${model} kann keine Bilder sehen – nimm z. B. gemma3 oder llava.`, 'error');
   }
 
-  const msg = { id: uid(), role: 'assistant', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now() };
+  const msg = { id: uid(), role: 'assistant', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now(), skills: activeSkills.filter((x) => !x.always).map((x) => x.name) };
   chat.messages.push(msg);
   busy.msgId = msg.id;
   if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
@@ -1495,6 +1499,20 @@ const memory = {
     }
   },
 };
+
+// ---------------------------------------------------------------------------
+// Skills (.skill-Dateien im Ordner "skills")
+// ---------------------------------------------------------------------------
+let skills = [];
+let skillsDir = '';
+async function refreshSkills() {
+  try {
+    const r = await skillsApi.list();
+    skills = r.skills || [];
+    skillsDir = r.dir || '';
+  } catch { /* Server alt oder offline */ }
+  return skills;
+}
 
 function recentChatList(chat) {
   return chats.filter((c) => c.id !== chat.id && c.messages.length)
@@ -1810,6 +1828,12 @@ function openSettings() {
         <div class="row"><input class="input grow" id="sSearchTest" placeholder="Suche testen, z. B. Wetter Berlin"><button class="btn" id="sSearchBtn">Testen</button></div>
         <div id="sSearchResult" class="hint" style="font-size:12.5px;color:var(--text-faint)"></div></div>
 
+      <div><div class="section-title">Skills</div>
+        <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Anleitungen für die KI als <b>.skill</b>-Dateien. Passende Skills werden automatisch geladen, je nachdem worum es in deiner Nachricht geht. Eigene Skills einfach in den Ordner legen (Vorlage: README.md im Ordner).</p>
+        <div class="list" id="skillList"><div class="empty-state" style="padding:8px">Lade …</div></div>
+        <div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm" id="skillOpen">${icon('folder')} Skills-Ordner öffnen</button><button class="btn btn-sm" id="skillReload">${icon('refresh')} Neu laden</button></div>
+        <span class="hint" id="skillDir" style="font-size:12px;color:var(--text-faint)"></span></div>
+
       <div><div class="section-title">Gedächtnis</div>
         <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Das weiß die KI dauerhaft über dich. Sie merkt sich Dinge selbst oder wenn du „Merk dir …“ sagst. Frühere Chats durchsucht sie automatisch, wenn du dich darauf beziehst.</p>
         <div class="list" id="memList"></div>
@@ -1866,6 +1890,26 @@ function openSettings() {
   bind('#sVoice', (t) => { settings.tts.voiceURI = t.value; });
   bind('#sRate', (t) => { settings.tts.rate = Number(t.value); q('#sRateVal').textContent = t.value; }, 'input');
   bind('#sPitch', (t) => { settings.tts.pitch = Number(t.value); q('#sPitchVal').textContent = t.value; }, 'input');
+  const renderSkills = async () => {
+    await refreshSkills();
+    q('#skillDir').textContent = skillsDir ? `Ordner: ${skillsDir}` : '';
+    q('#skillList').innerHTML = skills.length ? skills.map((sk) => `<div class="list-item"><div class="li-main">
+        <div class="li-title">${escapeHtml(sk.name)} ${sk.always ? '<span class="badge accent">immer</span>' : ''}</div>
+        <div class="li-sub" title="${escapeHtml(sk.triggers.join(', '))}">${escapeHtml(sk.description || sk.file)}${sk.triggers.length ? ` · Auslöser: ${escapeHtml(sk.triggers.slice(0, 6).join(', '))}${sk.triggers.length > 6 ? ' …' : ''}` : ''}</div></div>
+        <label class="switch" title="Skill an/aus"><input type="checkbox" data-skill="${escapeHtml(sk.id)}" ${settings.disabledSkills.includes(sk.id) ? '' : 'checked'}><span></span></label></div>`).join('')
+      : '<div class="empty-state" style="padding:8px">Keine Skills gefunden. Lege .skill-Dateien in den Skills-Ordner.</div>';
+  };
+  renderSkills();
+  q('#skillList').addEventListener('change', (e) => {
+    const id = e.target.dataset?.skill;
+    if (!id) return;
+    settings.disabledSkills = settings.disabledSkills.filter((x) => x !== id);
+    if (!e.target.checked) settings.disabledSkills.push(id);
+    saveSettings();
+  });
+  q('#skillReload').onclick = async () => { await renderSkills(); toast(`${skills.length} Skills geladen`); };
+  q('#skillOpen').onclick = () => skillsApi.openFolder().catch((err) => toast(err.message, 'error'));
+
   const renderMem = () => {
     q('#memList').innerHTML = settings.memory.length
       ? settings.memory.map((f, i) => `<div class="list-item"><div class="li-main" style="font-size:14px">${escapeHtml(f)}</div><div class="li-actions"><button class="icon-btn" data-mem-del="${i}" title="Vergessen">${icon('trash')}</button></div></div>`).join('')
@@ -1983,6 +2027,7 @@ async function init() {
     toast('Chats konnten nicht geladen werden: ' + err.message, 'error');
   }
   newChat();
+  refreshSkills();
   await checkStatus();
   renderAll();
 }

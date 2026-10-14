@@ -39,6 +39,20 @@ async function test(name, fn) {
   await test('"öffne ein CMD" nutzt das vorhandene KI-Terminal', () => assert.match(fix('start cmd /k'), /^echo /));
   await test('"cat" in Texten bleibt', () => assert.strictEqual(fix('echo concat category'), 'echo concat category'));
 
+  console.log('\nSkills');
+  await test('Mitgelieferte Skills lassen sich lesen', () => {
+    const list = srv.loadSkills();
+    assert.ok(list.length >= 6, `nur ${list.length} Skills`);
+    for (const sk of list) {
+      assert.ok(sk.name && sk.content.length > 100, `${sk.file} ist leer`);
+      assert.ok(sk.always || sk.triggers.length, `${sk.file} hat keine Auslöser`);
+    }
+  });
+  await test('Skill-Kopfbereich wird erkannt (auch mit BOM und CRLF)', () => {
+    const sk = srv.parseSkill('x.skill', '\ufeff---\r\nname: Test\r\ntriggers: a, b c\r\nalways: true\r\n---\r\nInhalt');
+    assert.deepStrictEqual([sk.name, sk.triggers, sk.always, sk.content], ['Test', ['a', 'b c'], true, 'Inhalt']);
+  });
+
   console.log('\nDateizugriff');
   const desk = await srv.desktopDir();
   fs.mkdirSync(desk, { recursive: true });

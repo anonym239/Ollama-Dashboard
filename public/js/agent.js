@@ -64,7 +64,7 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [] }) {
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [] }) {
   // Nur das Datum (ohne Uhrzeit): So bleibt der Prompt gleich und Ollama muss ihn nicht jedes Mal neu einlesen
   const now = new Date().toLocaleDateString('de-DE', { dateStyle: 'full' });
   const win = sys?.platform === 'win32';
@@ -150,7 +150,33 @@ Wenn der Nutzer „programmiere mir X“ sagt: lege einen Projektordner auf dem 
 - Passen die Ergebnisse nicht zur Frage, suche EINMAL erneut mit besseren Begriffen (z. B. mit dem Namen der offiziellen Webseite).
 - Formuliere eine eigene, gut verständliche Antwort (nicht abschreiben) und nenne am Ende kurz die Quellen als Links.`);
   }
+  if (skills.length) {
+    parts.push(`## Anleitungen (Skills) – befolge sie genau\n\n${skills.map((sk) => `### ${sk.name}\n${sk.content}`).join('\n\n')}`);
+  }
   return parts.join('\n\n');
+}
+
+// Passende Skills zur Nachricht auswählen: immer-aktive + bis zu 2 per Auslöser-Wort
+export function selectSkills(all, text, disabled = []) {
+  const low = ` ${String(text || '').toLowerCase()}`;
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hit = (t) => (/\s/.test(t) ? low.includes(t) : new RegExp(`(^|[^\\p{L}\\p{N}])${esc(t)}`, 'u').test(low));
+  const active = all.filter((s) => !disabled.includes(s.id));
+  const picked = active
+    .filter((s) => !s.always)
+    .map((s) => ({ s, score: s.triggers.filter(hit).length }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((x) => x.s);
+  const out = [];
+  let budget = 7000; // Platz im Kontext kleiner Modelle schonen
+  for (const s of [...active.filter((x) => x.always), ...picked]) {
+    if (s.content.length > budget) continue;
+    budget -= s.content.length;
+    out.push(s);
+  }
+  return out;
 }
 
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)

@@ -1,0 +1,32 @@
+---
+name: Websuche
+description: Richtig im Internet suchen, Webseiten lesen und daraus eine gute Antwort formulieren
+triggers: such, recherch, internet, web, google, online, aktuell, neueste, neuigkeit, news, preis, kostet, wetter, release, version, update, wer ist, 2025, 2026
+always: false
+---
+## So suchst du richtig im Web
+
+1. **Kurze, genaue Suchbegriffe** – keine ganzen Sätze.
+   - Schlecht: „Was sind eigentlich die neuesten Funktionen von Ollama?“
+   - Gut: „Ollama new features release“ oder „Ollama Changelog“
+2. **Immer den Namen der Sache nennen** (Produkt, Firma, Person, Ort). Ohne Namen findet die Suche nur allgemeine Nachrichtenseiten.
+3. **Bei Technik/Software englisch suchen** – dort gibt es mehr und aktuellere Infos. Antworte trotzdem auf Deutsch.
+4. **Offizielle Quellen zuerst**: Die eigene Webseite (z. B. ollama.com), GitHub-Releases, offizielle Doku. Nachrichtenportale nur bei echten Nachrichten.
+
+So startest du eine Suche (danach sofort aufhören zu schreiben):
+```suche
+Ollama new features release
+```
+
+## So liest du die Ergebnisse
+- Du bekommst echte **Textstellen** von den Webseiten. Lies sie genau.
+- Suche darin nach **konkreten Fakten**: Namen, Versionsnummern, Daten, Zahlen, Preise.
+- Passen die Ergebnisse nicht zur Frage (z. B. nur Nachrichtenseiten), suche **einmal** neu mit besseren Begriffen – z. B. mit „site:ollama.com“ oder dem Wort „official“.
+- Steht die Antwort in den Textstellen, sag **niemals** „ich habe nichts gefunden“.
+
+## So antwortest du
+- Beginne direkt mit der Antwort (keine Einleitung wie „Laut meiner Suche…“).
+- Fasse in **eigenen Worten** zusammen, gut gegliedert (kurze Absätze oder Stichpunkte).
+- Nenne konkrete Details aus den Quellen.
+- Erfinde nichts. Wenn etwas unklar oder widersprüchlich ist, sag das ehrlich.
+- Am Ende: **Quellen** als Links, z. B. „Quellen: [ollama.com](https://ollama.com/blog)“.

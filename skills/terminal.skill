@@ -1,0 +1,40 @@
+---
+name: Terminal & CMD
+description: Befehle richtig im sichtbaren KI-Terminal ausführen (Windows-CMD, PowerShell, Linux/macOS)
+triggers: terminal, cmd, konsole, eingabeaufforderung, befehl, powershell, ausführ, starte, öffne, install, pip, npm, ipconfig, ping, systeminfo, prozess, task, programm öffnen, ordner öffnen
+always: false
+---
+## Das KI-Terminal
+Du hast ein **eigenes, sichtbares Terminal-Fenster** auf dem Bildschirm des Nutzers. Du tippst Befehle selbst hinein und bekommst die **echte Ausgabe** zurück.
+- Öffne **kein** weiteres Fenster („start cmd“ ist unnötig).
+- Ein Befehl pro Block. Nach dem Block **sofort aufhören** und auf das Ergebnis warten.
+- **Niemals Ausgaben erfinden.**
+- Das Terminal startet im **Desktop-Ordner**. `cd` bleibt für den nächsten Befehl erhalten.
+
+```befehl
+ipconfig
+```
+
+## Windows (CMD) – das ist KEIN Linux!
+| Aufgabe | Richtig (Windows) | Falsch (Linux) |
+|---|---|---|
+| Ordnerinhalt | `dir` | `ls` |
+| Datei anzeigen | `type datei.txt` | `cat` |
+| Ordner wechseln | `cd /d "C:\Pfad"` | – |
+| Löschen | `del datei.txt`, `rmdir /s /q ordner` | `rm -rf` |
+| Kopieren/Verschieben | `copy`, `move` | `cp`, `mv` |
+| Aktueller Ordner | `cd` | `pwd` |
+| Programm/Datei/Webseite öffnen | `start "" "C:\Pfad\datei.html"`, `start notepad`, `start https://...` | `xdg-open` |
+| Explorer-Fenster | `start "" "C:\Pfad\Ordner"` | – |
+| Systeminfos | `systeminfo`, `ver`, `whoami` | `uname` |
+| Prozesse | `tasklist`, `taskkill /IM name.exe /F` | `ps`, `kill` |
+
+- Pfade mit **Backslash** `\` und in **Anführungszeichen**, wenn Leerzeichen drin sind.
+- Mehrere Befehle in einer Zeile: `befehl1 && befehl2`.
+- PowerShell-Befehle so: `powershell -NoProfile -Command "Get-Date"`.
+- Python-Skripte: `python skript.py` (vorher prüfen: `python --version`).
+
+## Ergebnis auswerten
+- **Exit-Code 0 = Erfolg.** Sag dem Nutzer kurz, was passiert ist und was die Ausgabe bedeutet.
+- Bei einem Fehler: Meldung lesen, Ursache nennen, **einen anderen, korrigierten** Befehl versuchen – nicht denselben wiederholen.
+- Gefährliche Befehle (Löschen, Formatieren, Registry, Systemdateien) nur, wenn der Nutzer es ausdrücklich will – und vorher kurz warnen.

@@ -13,6 +13,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_OLLAMA = normalizeUrl(process.env.OLLAMA_URL || 'http://127.0.0.1:11434');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// Skills: .skill-Dateien mit Anleitungen für die KI (neben der App, eigene einfach dazulegen)
+const SKILLS_DIR = process.env.SKILLS_DIR || path.join(__dirname, 'skills');
 // Geheimer Schlüssel pro Serverstart: nur die eigene Oberfläche darf lokale Aktionen ausführen
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const IS_WIN = process.platform === 'win32';
@@ -672,7 +674,11 @@ Write-Host '  KI-Terminal' -ForegroundColor Magenta
 Write-Host '  Hier tippt und startet deine KI Befehle - sichtbar fuer dich.' -ForegroundColor DarkGray
 Write-Host '  Fenster schliessen ist ok, es wird bei Bedarf neu geoeffnet.' -ForegroundColor DarkGray
 Write-Host ''
-Set-Content -Path (Join-Path $QueueDir 'session.pid') -Value $PID
+# PID schreiben – mit Wiederholung, falls das Dashboard die Datei gerade liest (Windows sperrt sie dann kurz)
+$pidFile = Join-Path $QueueDir 'session.pid'
+for ($i = 0; $i -lt 50; $i++) {
+  try { [System.IO.File]::WriteAllText($pidFile, "$PID"); break } catch { Start-Sleep -Milliseconds 100 }
+}
 while ($true) {
   $jobs = @(Get-ChildItem -Path $QueueDir -Filter 'job-*.cmd' -ErrorAction SilentlyContinue | Sort-Object Name)
   foreach ($job in $jobs) {
@@ -696,7 +702,9 @@ while ($true) {
     if (Test-Path $cwdFile) { $c = ([System.IO.File]::ReadAllText($cwdFile)).Trim(); if ($c) { $cwd = $c } }
     Write-Host ''
     Remove-Item $job.FullName -ErrorAction SilentlyContinue
-    [System.IO.File]::WriteAllText((Join-Path $QueueDir "$id.done"), "$code")
+    for ($i = 0; $i -lt 50; $i++) {
+      try { [System.IO.File]::WriteAllText((Join-Path $QueueDir "$id.done"), "$code"); break } catch { Start-Sleep -Milliseconds 100 }
+    }
   }
   Start-Sleep -Milliseconds 200
 }
@@ -725,7 +733,7 @@ done
 
 function termAlive() {
   try {
-    const pid = Number(fs.readFileSync(path.join(TERM_DIR, 'session.pid'), 'utf8').trim());
+    const pid = Number(fs.readFileSync(path.join(TERM_DIR, 'session.pid'), 'utf8').replace(/^\ufeff/, '').trim());
     if (!pid) return false;
     process.kill(pid, 0);
     return true;
@@ -801,7 +809,9 @@ async function terminalRun(original, { timeout = 120_000 } = {}) {
   while (Date.now() - started < timeout) {
     await new Promise((r) => setTimeout(r, 250));
     if (fs.existsSync(`${base}.done`)) {
-      const code = parseInt(readText(`${base}.done`).trim(), 10);
+      const raw = readText(`${base}.done`).trim();
+      if (!raw) continue; // wird gerade noch geschrieben
+      const code = parseInt(raw, 10);
       const out = readText(`${base}.out`);
       const cwd = readText(cwdFile).trim();
       if (cwd) termCwd = cwd;
@@ -811,6 +821,50 @@ async function terminalRun(original, { timeout = 120_000 } = {}) {
     if (!termAlive()) return { code: -1, stdout: readText(`${base}.out`), stderr: 'Das Terminal-Fenster wurde geschlossen.', visible: true, command };
   }
   return { code: 0, stdout: readText(`${base}.out`) + '\n[Der Befehl läuft im Terminal-Fenster weiter (z. B. ein Server oder ein offenes Programm). Bisherige Ausgabe siehe oben.]', stderr: '', visible: true, command, running: true };
+}
+
+// ---------- Skills ----------
+// Aufbau einer .skill-Datei:
+//   ---
+//   name: Websuche
+//   description: Wofür der Skill da ist
+//   triggers: suche, internet, recherche      (Wörter, bei denen er geladen wird)
+//   always: false                              (true = immer laden)
+//   ---
+//   Anleitung in normalem Text/Markdown …
+function parseSkill(file, text) {
+  text = String(text).replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
+  const meta = {};
+  let body = text;
+  const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (m) {
+    for (const line of m[1].split('\n')) {
+      const kv = line.match(/^\s*([\w-]+)\s*:\s*(.*)$/);
+      if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, '');
+    }
+    body = m[2];
+  }
+  const base = path.basename(file).replace(/\.skill$/i, '');
+  return {
+    id: base,
+    file: path.basename(file),
+    name: meta.name || base,
+    description: meta.description || '',
+    triggers: (meta.triggers || '').split(/[,;]/).map((t) => t.trim().toLowerCase()).filter(Boolean),
+    always: /^(true|ja|yes|1)$/i.test(meta.always || ''),
+    content: body.trim().slice(0, 8000),
+  };
+}
+
+function loadSkills() {
+  fs.mkdirSync(SKILLS_DIR, { recursive: true });
+  return fs.readdirSync(SKILLS_DIR)
+    .filter((f) => /\.skill$/i.test(f))
+    .sort()
+    .map((f) => {
+      try { return parseSkill(f, fs.readFileSync(path.join(SKILLS_DIR, f), 'utf8')); } catch { return null; }
+    })
+    .filter((x) => x && x.content);
 }
 
 async function handleLocal(req, res) {
@@ -875,6 +929,15 @@ async function handleLocal(req, res) {
       const body = await readBody(req);
       return json(res, 200, await fetchPage(String(body.url || ''), body.query ? 6000 : 12_000, String(body.query || '')));
     }
+    if (route === '/local/skills' && req.method === 'GET') {
+      return json(res, 200, { dir: SKILLS_DIR, skills: loadSkills() });
+    }
+    if (route === '/local/skills/open' && req.method === 'POST') {
+      fs.mkdirSync(SKILLS_DIR, { recursive: true });
+      const q = JSON.stringify(SKILLS_DIR);
+      spawn(IS_WIN ? `start "" ${q}` : process.platform === 'darwin' ? `open ${q}` : `xdg-open ${q}`, { shell: true, stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+      return json(res, 200, { ok: true, dir: SKILLS_DIR });
+    }
     const fsRoute = route.match(/^\/local\/fs\/(\w+)$/);
     if (fsRoute && req.method === 'POST') {
       const body = await readBody(req, 20_000_000);
@@ -920,7 +983,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
+module.exports = { parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

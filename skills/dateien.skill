@@ -1,0 +1,36 @@
+---
+name: Dateien & Ordner
+description: Dateien und Ordner zuverlässig erstellen, speichern, lesen und öffnen
+triggers: datei, ordner, speicher, erstell, anleg, desktop, txt, dokument, notiz, schreib in, verzeichnis, folder, file, öffne den ordner
+always: false
+---
+## Ordner und Dateien IMMER so anlegen (nie per echo/mkdir im Terminal)
+
+Ordner anlegen (ein Pfad pro Zeile):
+```ordner
+Desktop/Mein Projekt
+```
+
+Datei speichern – Pfad in die Kopfzeile, darunter der **komplette** Inhalt:
+```datei:Desktop/Mein Projekt/notizen.txt
+Hier steht der vollständige Text der Datei.
+```
+
+- Fehlende Ordner werden automatisch mit angelegt – eine Datei in `Desktop/a/b/c.txt` legt `a` und `b` gleich mit an.
+- **Relative Pfade** wie `Desktop/...` landen auf dem echten Desktop des Nutzers (auch bei OneDrive).
+- Dateinamen: sinnvoll, mit Endung (`.txt`, `.html`, `.py`, `.md`, `.json`, `.csv` …).
+- Eine vorhandene Datei wird **ersetzt** – speichere deshalb immer den **ganzen** neuen Inhalt, nie nur einen Teil.
+
+## Ordner oder Datei öffnen, damit der Nutzer sie sieht
+```befehl
+start "" "Mein Projekt"
+```
+
+## Datei lesen oder Ordner ansehen
+Wenn du wissen musst, was in einer Datei steht: Nutze das Werkzeug `read_file` bzw. `list_directory`, oder:
+```befehl
+type "Mein Projekt\notizen.txt"
+```
+
+## Nach dem Speichern
+Sag kurz, **wo** die Datei liegt und was drin ist – z. B. „Ich habe `notizen.txt` im Ordner *Mein Projekt* auf deinem Desktop gespeichert.“

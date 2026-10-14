@@ -17,6 +17,7 @@ Ein modernes, cleanes KI-Chat-Dashboard für deine **lokalen KIs mit [Ollama](ht
 - 🌐 **Websuche ohne API-Key**: Weiß die KI etwas nicht, recherchiert sie selbst im Internet, liest die besten Seiten und formuliert daraus eine eigene Antwort mit Quellen.
   - Anbieter wählbar: **Google (Standard)**, DuckDuckGo, Bing, Brave. Klappt einer nicht, wird automatisch der nächste genommen.
   - Optional mit kostenlosem Kontingent: Google Custom Search API, Tavily oder eine eigene SearXNG-Instanz
+- 📘 **Skills**: Anleitungen für die KI als `.skill`-Dateien im Ordner `skills`, z. B. wie sie richtig im Web sucht, programmiert oder das Terminal nutzt. Passende Skills werden automatisch geladen. Eigene kannst du einfach dazulegen, siehe [`skills/README.md`](skills/README.md).
 - 🧠 **Gedächtnis**: Die KI erinnert sich an frühere Chats und merkt sich wichtige Infos über dich.
 - 📎 **Dateien schicken**: Bilder (für Vision-Modelle wie `gemma3`, `llava`), PDFs, Text- und Code-Dateien, per Klick, Drag & Drop oder Einfügen
 - 🔊 **Automatisches Vorlesen** (Text-to-Speech), schon während die KI schreibt. Stimme, Tempo und Tonhöhe sind einstellbar.

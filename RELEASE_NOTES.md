@@ -13,6 +13,11 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.3
+
+- **Skills**: Anleitungen für die KI als `.skill`-Dateien im Ordner `skills`. Passende Skills werden automatisch geladen, je nachdem worum es geht. Mitgeliefert sind Skills für **Websuche, Programmieren, Terminal & CMD, Dateien & Ordner, Ollama & Modelle, Gedächtnis** und **Gut antworten**. Eigene Skills legst du einfach in den Ordner (Anleitung: `skills/README.md`). In den Einstellungen kannst du sie an- und ausschalten.
+- **Stabileres KI-Terminal unter Windows**: Kein Fehler mehr, wenn das Dashboard die Statusdatei liest, während das Terminal sie schreibt.
+
 ### Neu in 1.2.1
 
 - **Scrollen beim Schreiben**: Während die KI Code schreibt, kannst du im Code-Fenster und im Chat frei scrollen, ohne dass es zurückspringt. Bist du ganz unten, läuft die Anzeige automatisch mit, wie in einem Terminal.
