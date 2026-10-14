@@ -1,0 +1,89 @@
+name: Release
+
+# Baut den Windows-Installer (.exe) und veröffentlicht ihn als GitHub-Release.
+# Auslösen: Tag pushen, z. B.  git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (z. B. 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Version bestimmen
+        id: v
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then V="${{ github.event.inputs.version }}"; else V="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          node -e "const f='package.json';const p=require('./'+f);p.version='$V';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+
+      - name: Programm bauen (eigenständige .exe)
+        run: npm run build
+
+      - name: Schnelltest der .exe
+        shell: pwsh
+        run: |
+          $env:NO_OPEN = "1"; $env:PORT = "3999"
+          $p = Start-Process -FilePath "dist\app\OllamaDashboard.exe" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 4
+          $r = Invoke-WebRequest -Uri "http://localhost:3999/" -UseBasicParsing
+          Stop-Process -Id $p.Id -Force
+          if ($r.StatusCode -ne 200 -or $r.Content -notmatch "Ollama Dashboard") { throw "Dashboard antwortet nicht" }
+          Write-Host "OK – Dashboard startet."
+
+      - name: Inno Setup bereitstellen
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup nicht gefunden" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Installer bauen
+        shell: pwsh
+        run: '& $env:ISCC "/DMyAppVersion=${{ steps.v.outputs.version }}" installer\setup.iss'
+
+      - name: Portable ZIP erstellen
+        shell: pwsh
+        run: Compress-Archive -Path dist\app\* -DestinationPath "dist\OllamaDashboard-Portable-${{ steps.v.outputs.version }}-win-x64.zip"
+
+      - name: Prüfsummen
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.exe, dist\*.zip | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } | Out-File dist\SHA256SUMS.txt -Encoding ascii
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+      - name: GitHub-Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: Ollama Dashboard v${{ steps.v.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/OllamaDashboard-Setup-${{ steps.v.outputs.version }}.exe
+            dist/OllamaDashboard-Portable-${{ steps.v.outputs.version }}-win-x64.zip
+            dist/SHA256SUMS.txt

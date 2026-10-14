@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="dashboard-token" content="{{TOKEN}}">
+  <meta name="color-scheme" content="light dark">
+  <title>Ollama Dashboard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- Seitenleiste -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand">
+          <div class="brand-logo">✦</div>
+          <div class="brand-text">
+            <strong>Ollama Dashboard</strong>
+            <span>Deine lokale KI</span>
+          </div>
+          <button class="icon-btn only-mobile" id="closeSidebar" title="Schließen"></button>
+        </div>
+        <button class="btn btn-primary btn-block" id="newChat"></button>
+        <div class="search">
+          <span class="search-icon"></span>
+          <input type="search" id="chatSearch" placeholder="Chats durchsuchen …" autocomplete="off">
+        </div>
+      </div>
+      <nav class="chat-list" id="chatList"></nav>
+      <div class="sidebar-bottom">
+        <button class="nav-btn" id="openAssistants"></button>
+        <button class="nav-btn" id="openModels"></button>
+        <button class="nav-btn" id="openSettings"></button>
+        <div class="status" id="status" title="Ollama-Status">
+          <span class="dot"></span><span class="status-text">Verbinde …</span>
+        </div>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop"></div>
+
+    <!-- Hauptbereich -->
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn" id="toggleSidebar" title="Seitenleiste"></button>
+        <button class="assistant-picker" id="assistantPicker" title="Assistent wählen"></button>
+        <div class="select-wrap">
+          <select id="modelSelect" title="Modell"></select>
+        </div>
+        <div class="topbar-spacer"></div>
+        <button class="chip-toggle" id="toggleAgent" title="Agent-Modus: KI darf (mit deiner Erlaubnis) Dateien, Terminal und Ollama steuern"></button>
+        <button class="chip-toggle" id="toggleWeb" title="Websuche: KI darf im Internet recherchieren"></button>
+        <button class="chip-toggle" id="toggleTts" title="Antworten automatisch vorlesen"></button>
+      </header>
+
+      <div class="banner-area" id="bannerArea"></div>
+
+      <section class="messages" id="messages">
+        <div class="messages-inner" id="messagesInner"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <form class="composer" id="composer">
+          <div class="attachments" id="attachments"></div>
+          <textarea id="input" rows="1" placeholder="Nachricht an deine KI …" autocomplete="off"></textarea>
+          <div class="composer-bar">
+            <div class="composer-left">
+              <button type="button" class="icon-btn" id="attachBtn" title="Datei anhängen (Bilder, PDFs, Text, Code)"></button>
+              <button type="button" class="icon-btn" id="micBtn" title="Spracheingabe"></button>
+              <span class="composer-hint" id="composerHint"></span>
+            </div>
+            <button type="submit" class="send-btn" id="sendBtn" title="Senden"></button>
+          </div>
+          <input type="file" id="fileInput" multiple hidden>
+        </form>
+        <p class="footnote">Läuft 100 % lokal mit Ollama · Keine Cloud, keine API-Keys</p>
+      </footer>
+    </main>
+  </div>
+
+  <div class="drop-overlay" id="dropOverlay"><div>Dateien hier ablegen</div></div>
+  <div class="modal-root" id="modalRoot"></div>
+  <div class="menu-root" id="menuRoot"></div>
+  <div class="toasts" id="toasts"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
