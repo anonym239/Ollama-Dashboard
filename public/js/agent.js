@@ -64,7 +64,7 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [] }) {
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [], codeBlocks = [] }) {
   // Nur das Datum (ohne Uhrzeit): So bleibt der Prompt gleich und Ollama muss ihn nicht jedes Mal neu einlesen
   const now = new Date().toLocaleDateString('de-DE', { dateStyle: 'full' });
   const win = sys?.platform === 'win32';
@@ -73,7 +73,7 @@ export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, mo
   const parts = [];
   if (assistant?.systemPrompt?.trim()) parts.push(assistant.systemPrompt.trim());
   else parts.push(`Du bist ${assistant?.name || 'ein KI-Assistent'}, ein hilfreicher, kluger KI-Assistent.`);
-  parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte in der Sprache des Nutzers, klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
+  parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte immer vollständig in der Sprache des Nutzers (meist Deutsch) – niemals chinesische oder andere fremde Schriftzeichen. Klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
 
   if (memory.length) parts.push(`## Was du über den Nutzer weißt\n${memory.map((f) => `- ${f}`).join('\n')}`);
   if (recentChats.length) parts.push(`## Frühere Chats mit dem Nutzer\n${recentChats.join('\n')}\nWenn der Nutzer sich auf frühere Gespräche bezieht, sieh dort nach – mit einem Block:\n\`\`\`erinnern\nSuchbegriff\n\`\`\`\nDanach aufhören, du bekommst die passenden Stellen.`);
@@ -150,6 +150,16 @@ Wenn der Nutzer „programmiere mir X“ sagt: lege einen Projektordner auf dem 
 - Passen die Ergebnisse nicht zur Frage, suche EINMAL erneut mit besseren Begriffen (z. B. mit dem Namen der offiziellen Webseite).
 - Formuliere eine eigene, gut verständliche Antwort (nicht abschreiben) und nenne am Ende kurz die Quellen als Links.`);
   }
+  if (agent && codeBlocks.length) {
+    const list = codeBlocks.slice(-6).map((b) => `- @code ${b.n}: ${b.path || b.lang || 'Code'} (${b.code.split('\n').length} Zeilen) – beginnt mit: ${b.code.trim().split('\n')[0].slice(0, 60)}`);
+    parts.push(`## Code, der schon im Chat steht
+${list.join('\n')}
+Soll so ein Code gespeichert werden, schreibe ihn NICHT noch einmal ab – das kostet nur Zeit. Schreibe stattdessen nur den Verweis in den datei:-Block, die App setzt den kompletten Code ein:
+\`\`\`datei:Desktop/projekt/index.html
+@code ${codeBlocks[codeBlocks.length - 1].n}
+\`\`\`
+Nur wenn der Code geändert werden soll, schreibst du die neue, vollständige Fassung.`);
+  }
   if (skills.length) {
     parts.push(`## Anleitungen (Skills) – befolge sie genau\n\n${skills.map((sk) => `### ${sk.name}\n${sk.content}`).join('\n\n')}`);
   }
@@ -178,6 +188,80 @@ export function selectSkills(all, text, disabled = []) {
   }
   return out;
 }
+
+// ---------- Code wiederverwenden statt neu schreiben ----------
+const ACTION_KINDS = new Set(['befehl', 'terminal', 'command', 'suche', 'search', 'ollama', 'erinnern', 'merken', 'ordner', 'folder']);
+
+// Alle Code-Blöcke aus früheren KI-Antworten (nummeriert ab 1)
+export function collectCodeBlocks(messages) {
+  const out = [];
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !m.content) continue;
+    const re = /```[ \t]*([^\n`]*)\n([\s\S]*?)```/g;
+    let x;
+    while ((x = re.exec(m.content))) {
+      const info = x[1].trim();
+      const kind = info.toLowerCase();
+      if (ACTION_KINDS.has(kind)) continue;
+      const code = x[2].replace(/\n$/, '');
+      if (/^@code\b/i.test(code.trim()) || code.trim().length < 20) continue;
+      const file = info.match(/^(?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*(.+)$/i);
+      const lang = file ? (file[1].split('.').pop() || '').toLowerCase() : kind.split(/\s+/)[0];
+      out.push({ n: out.length + 1, lang, path: file ? file[1].trim() : '', code });
+    }
+  }
+  return out;
+}
+
+const EXT_LANG = { htm: 'html', js: 'javascript', mjs: 'javascript', py: 'python', ts: 'typescript', md: 'markdown', sh: 'bash', bat: 'batch', ps1: 'powershell' };
+const sameLang = (a, b) => a && b && (a === b || EXT_LANG[a] === b || EXT_LANG[b] === a || EXT_LANG[a] === EXT_LANG[b]);
+
+// "@code", "@code 2" oder "@code letzte" -> echter Code; passend zur Dateiendung, wenn keine Nummer
+export function resolveCodeRef(content, path, blocks) {
+  const m = String(content || '').trim().match(/^@code(?:\s*#?\s*(\d+))?\s*$/i);
+  if (!m || !blocks.length) return null;
+  if (m[1]) return blocks[Number(m[1]) - 1]?.code ?? null;
+  const ext = (String(path || '').split('.').pop() || '').toLowerCase();
+  const match = [...blocks].reverse().find((b) => sameLang(b.lang, ext) || (b.path && b.path.split('.').pop().toLowerCase() === ext));
+  return (match || blocks[blocks.length - 1]).code;
+}
+
+// Will der Nutzer vorhandenen Code nur speichern/einfügen (nicht ändern)?
+export function wantsReuse(text) {
+  const t = String(text || '');
+  return /(speicher|einfüg|füg\S* .*ein|nimm|übernimm|verwende|benutz|pack|kopier|in (die|eine) datei|in den ordner|datei (erstell|anleg)|erstell\S* (die|eine) datei)/i.test(t)
+    && !/(änder|fix|reparier|verbesser|erweiter|hinzufüg|umschreib|neu schreib|anders|bug|fehler|optimier|mach .* besser|füge? .* hinzu)/i.test(t);
+}
+
+// Schreibt die KI gerade denselben Code noch einmal ab? Dann Ende des offenen datei:-Blocks + vollständiger alter Code
+export function detectRewrite(text, blocks) {
+  const open = text.match(/```[ \t]*((?:[\w+#.-]+\s+)?(?:datei|file)\s*[:=]\s*[^\n`]+)\n([\s\S]*)$/i);
+  if (!open || /```/.test(open[2])) return null;
+  const norm = (s) => s.replace(/\s+/g, ' ').trim();
+  const body = norm(open[2]);
+  if (body.length < 160) return null;
+  for (const b of [...blocks].reverse()) {
+    if (norm(b.code).startsWith(body.slice(0, 400))) {
+      return { start: text.length - open[2].length, code: b.code, n: b.n };
+    }
+  }
+  return null;
+}
+
+// Sprache der Nachricht grob erkennen (für den unsichtbaren Sprach-Hinweis an das Modell)
+export function detectLanguage(text) {
+  const t = ` ${String(text || '').toLowerCase()} `;
+  const count = (words) => words.reduce((n, w) => n + (t.includes(` ${w} `) ? 1 : 0), 0);
+  const de = count(['der', 'die', 'das', 'und', 'ist', 'nicht', 'ich', 'du', 'bitte', 'mit', 'mir', 'mein', 'ein', 'eine', 'wie', 'was', 'kannst', 'auf', 'für', 'mach', 'den', 'dem', 'zu', 'es', 'wir']) + (/[äöüß]/.test(t) ? 2 : 0);
+  const en = count(['the', 'and', 'is', 'not', 'i', 'you', 'please', 'with', 'my', 'a', 'how', 'what', 'can', 'for', 'make', 'to', 'it', 'we', 'of', 'this']);
+  if (de === 0 && en === 0) return 'de';
+  return de >= en ? 'de' : 'en';
+}
+
+export const LANGUAGE_REMINDER = {
+  de: '\n\n(Antworte ausschließlich auf Deutsch – ohne chinesische oder andere fremde Schriftzeichen.)',
+  en: '\n\n(Answer only in English – no Chinese or other foreign characters.)',
+};
 
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
@@ -216,7 +300,7 @@ function shellCommand(kind, body) {
 }
 
 // Aktionen aus Codeblöcken lesen (funktioniert auch mit kleinen Modellen ohne Tool-Support)
-export function parseTextActions(content, { agent, webSearch, intent = false }) {
+export function parseTextActions(content, { agent, webSearch, intent = false, codeBlocks = [] }) {
   const actions = [];
   const re = /```[ \t]*([^\n`]*)\n([\s\S]*?)```/g;
   let m;
@@ -227,7 +311,8 @@ export function parseTextActions(content, { agent, webSearch, intent = false }) 
     const raw = info.toLowerCase();
     const kind = blockKind(info, intent);
     if (file && agent) {
-      actions.push({ name: 'write_file', args: { path: file[1].trim(), content: body + '\n' } });
+      const ref = resolveCodeRef(body, file[1].trim(), codeBlocks);
+      actions.push({ name: 'write_file', args: { path: file[1].trim(), content: (ref ?? body) + '\n' }, reused: ref != null });
     } else if (kind === 'suche' || kind === 'search') {
       if (webSearch && body.trim()) actions.push({ name: 'web_search', args: { query: body.trim().split('\n')[0] } });
     } else if (kind === 'erinnern') {

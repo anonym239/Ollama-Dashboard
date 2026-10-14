@@ -13,6 +13,13 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.4
+
+- **Code wird nicht doppelt geschrieben**: Soll vorhandener Code nur gespeichert werden, nutzt die KI einen Verweis (`@code`), und die App setzt den Code ein. Fängt die KI trotzdem an, ihn neu abzutippen, erkennt die App das nach wenigen Zeilen und übernimmt den fertigen Code sofort. Das spart viel Zeit und Leistung.
+- **100 % in deiner Sprache**: Neuer Skill „Sprache“ plus ein automatischer Hinweis an jede Nachricht. Modelle wie Qwen mischen keine chinesischen Zeichen mehr in deutsche Antworten.
+- **Neue Denk-Animation**: Kleine Kugeln drehen sich im Kreis und pulsieren versetzt.
+- **Neue Skills**: „Code wiederverwenden“ und „Sprache“.
+
 ### Neu in 1.3
 
 - **Skills**: Anleitungen für die KI als `.skill`-Dateien im Ordner `skills`. Passende Skills werden automatisch geladen, je nachdem worum es geht. Mitgeliefert sind Skills für **Websuche, Programmieren, Terminal & CMD, Dateien & Ordner, Ollama & Modelle, Gedächtnis** und **Gut antworten**. Eigene Skills legst du einfach in den Ordner (Anleitung: `skills/README.md`). In den Einstellungen kannst du sie an- und ausschalten.

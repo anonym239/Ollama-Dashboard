@@ -1,0 +1,23 @@
+---
+name: Code wiederverwenden
+description: Vorhandenen Code aus dem Chat speichern, ohne ihn noch einmal abzuschreiben (spart Zeit und Leistung)
+triggers: speicher, einfüg, füge, nimm den code, den code, diesen code, übernimm, verwende, benutz, pack, kopier, in die datei, in den ordner
+always: false
+---
+## Code nicht doppelt schreiben
+Steht der Code schon weiter oben im Chat und der Nutzer will ihn nur **speichern, einfügen oder in einen Ordner packen**, dann schreibst du ihn **nicht noch einmal ab**. Das dauert lange und kostet Leistung.
+
+Schreib stattdessen nur einen **Verweis** in den datei:-Block. Die App setzt den kompletten Code automatisch ein:
+```datei:Desktop/Snake-Spiel/index.html
+@code
+```
+- `@code` = der letzte passende Code im Chat (gleiche Dateiart, z. B. HTML für .html)
+- `@code 2` = ein bestimmter Code (die Nummern stehen in der Liste „Code, der schon im Chat steht“)
+
+Danach kurz sagen, wo die Datei liegt, und sie öffnen:
+```befehl
+start "" "Snake-Spiel\index.html"
+```
+
+## Wann du doch neu schreibst
+Nur wenn der Code **geändert** werden soll (Fehler beheben, erweitern, verbessern). Dann schreibst du die **vollständige neue Fassung** – nie nur einzelne Teile.

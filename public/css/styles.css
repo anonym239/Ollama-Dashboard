@@ -573,3 +573,16 @@ input[type="range"] { accent-color: var(--accent); width: 100%; }
 @media (prefers-reduced-motion: reduce) { .ti-orb, .ti-orb::after, .ti-orb svg, .ti-label { animation: none; } .ti-label { color: var(--text-soft); background: none; } }
 .msg:has(.think-ind) .live-meta { display: none; }
 .skill-tag { font-size: 11px; font-weight: 500; color: var(--accent-text); background: var(--accent-soft); padding: 1px 7px; border-radius: 99px; }
+
+/* Denk-Animation: kleine Kugeln, die im Kreis laufen und versetzt pulsieren */
+.ti-dots { position: relative; width: 22px; height: 22px; flex: none; animation: spin 2.4s linear infinite; }
+.ti-dots i {
+  position: absolute; left: 50%; top: 50%; width: 4.5px; height: 4.5px; margin: -2.25px 0 0 -2.25px; border-radius: 50%;
+  background: var(--accent); transform: rotate(calc(var(--i) * 45deg)) translateY(-8px);
+  animation: dotPulse 1.2s ease-in-out infinite; animation-delay: calc(var(--i) * -0.15s);
+}
+.ti-dots i:nth-child(even) { background: var(--accent-2); }
+@keyframes dotPulse { 0%, 100% { opacity: .25; scale: .55; } 50% { opacity: 1; scale: 1.15; } }
+.reuse-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-faint); }
+.reuse-note svg { width: 14px; height: 14px; }
+@media (prefers-reduced-motion: reduce) { .ti-dots, .ti-dots i { animation: none; } }

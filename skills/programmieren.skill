@@ -25,6 +25,8 @@ Desktop/snake-spiel
 start "" "snake-spiel\index.html"
 ```
 
+**Code steht schon im Chat und soll nur gespeichert werden?** Nicht neu abschreiben, sondern `@code` als Inhalt des datei:-Blocks schreiben. Die App setzt den Code automatisch ein.
+
 ## Regeln für guten Code
 - **Immer vollständiger Code.** Niemals „...“, „Rest bleibt gleich“ oder „hier deinen Code einfügen“.
 - Der Code muss **ohne Änderungen laufen**. Keine Platzhalter, keine erfundenen Bibliotheken.

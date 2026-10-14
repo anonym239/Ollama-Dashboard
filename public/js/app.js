@@ -5,7 +5,7 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { local, localFs, web, skillsApi } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -708,12 +708,14 @@ function bodyHtml(text, streaming, m) {
   if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
   if (streaming && !text.trim()) return thinkIndicator(m.thinking ? 'Denkt nach' : 'Überlegt');
   let html = renderMarkdown(text);
+  if (m.reusedCode && !streaming) html += `<p class="reuse-note">${icon('copy')} Code ${m.reusedCode} aus dem Chat übernommen – nicht neu geschrieben</p>`;
   if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
   return streaming ? html.replace(/(<\/p>|<\/li>)(?![\s\S]*(<\/p>|<\/li>))/, '<span class="cursor"></span>$1') : html;
 }
 
 function thinkIndicator(label) {
-  return `<div class="think-ind"><span class="ti-orb">${LOGO}</span><span class="ti-label">${label}</span><span class="ti-meta" data-ti></span></div>`;
+  const dots = Array.from({ length: 8 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
+  return `<div class="think-ind"><span class="ti-dots" aria-hidden="true">${dots}</span><span class="ti-label">${label}</span><span class="ti-meta" data-ti></span></div>`;
 }
 
 function thinkingHtml(thinking, active) {
@@ -787,7 +789,7 @@ function toolHtml(t) {
   const failed = t.status === 'done' && t.failedRun;
   return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><div class="tool-card ${t.status}" style="flex:1">
     <div class="tool-head"><div class="t-icon">${icon(meta.icon)}</div><div class="t-label" title="${escapeHtml(meta.label(a))}">${escapeHtml(meta.label(a))}</div>
-    <span class="tool-status ${failed ? 'error' : t.status}">${failed ? 'Mit Fehler beendet' : STATUS_TEXT[t.status] || t.status}</span></div>
+    ${t.reused ? '<span class="badge accent" title="Vorhandener Code wurde übernommen statt neu geschrieben">übernommener Code</span>' : ''}<span class="tool-status ${failed ? 'error' : t.status}">${failed ? 'Mit Fehler beendet' : STATUS_TEXT[t.status] || t.status}</span></div>
     ${body ? `<div class="tool-body">${body}</div>` : ''}</div></div>`;
 }
 
@@ -1230,7 +1232,9 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   const intent = wantsExecution(lastUser?.content);
   const activeSkills = selectSkills(skills, lastUser?.content, settings.disabledSkills);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills }) }];
+  const codeBlocks = collectCodeBlocks(chat.messages);
+  const reuseIntent = agentOn && codeBlocks.length && wantsReuse(lastUser?.content);
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
   for (const m of chat.messages) {
@@ -1251,6 +1255,13 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       else {
         messages.push({ role: 'user', content: `[Echtes Ergebnis der Aktion „${(TOOL_META[m.name]?.label(m.args || {})) || m.name}“]\n${content}\n\n(Diese Aktion ist erledigt – wiederhole sie NICHT. Antworte dem Nutzer jetzt mit dem echten Ergebnis oder mache einen neuen, anderen Schritt.)` });
       }
+    }
+  }
+  // Unsichtbarer Sprach-Hinweis direkt an der letzten Nutzer-Nachricht (wirkt bei Qwen & Co. am zuverlässigsten)
+  for (let k = messages.length - 1; k > 0; k--) {
+    if (messages[k].role === 'user') {
+      messages[k] = { ...messages[k], content: messages[k].content + LANGUAGE_REMINDER[detectLanguage(lastUser?.content)] };
+      break;
     }
   }
   if (droppedImages && !chat.warnedVision) {
@@ -1286,6 +1297,19 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
         msg.stats = { eval_count: ev.eval_count, eval_duration: ev.eval_duration, total_duration: ev.total_duration, prompt_eval_count: ev.prompt_eval_count };
         countTokens(chat, (ev.prompt_eval_count || 0) + (ev.eval_count || 0));
         msg.liveTokens = 0;
+      }
+      // Schreibt die KI vorhandenen Code nur ab? Dann abbrechen und den fertigen Code übernehmen
+      if (reuseIntent && !toolCalls.length) {
+        const { text } = splitThink(msg.content);
+        const rw = detectRewrite(text, codeBlocks);
+        if (rw) {
+          const off = msg.content.length - text.length;
+          msg.content = `${msg.content.slice(0, off + rw.start)}${rw.code}\n\`\`\``;
+          msg.reusedCode = rw.n;
+          roundCtrl.abort();
+          if (currentChatId === chat.id) scheduleStreamRender(msg);
+          break;
+        }
       }
       if (!toolCalls.length && (agentOn || webOn)) {
         const { text } = splitThink(msg.content);
@@ -1339,7 +1363,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       return { name: tc.function?.name, args, native: true };
     });
   } else {
-    actions = parseTextActions(splitThink(msg.content).text, { agent: agentOn, webSearch: webOn, intent });
+    actions = parseTextActions(splitThink(msg.content).text, { agent: agentOn, webSearch: webOn, intent, codeBlocks });
   }
   // Schon ausgeführte Aktionen nicht wiederholen
   const key = (a) => `${a.name}:${JSON.stringify(a.args || {})}`;
@@ -1355,11 +1379,16 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     if (ran) { anyRan = true; if (INFO_TOOLS.has(act.name)) gotInfo = true; }
   }
   // Native Tools: immer weiter (KI reagiert auf Ergebnisse). Text-Aktionen: nur wenn neue Infos da sind.
-  return toolCalls.length ? true : gotInfo && anyRan;
+  // Nach übernommenem Code darf die KI weitermachen (z. B. die Datei öffnen)
+  return toolCalls.length ? true : (gotInfo && anyRan) || (!!msg.reusedCode && anyRan);
 }
 
 async function runAction(chat, act, signal) {
-  const t = { id: uid(), role: 'tool', name: act.name, args: act.args || {}, native: !!act.native, status: 'running', createdAt: Date.now() };
+  const t = { id: uid(), role: 'tool', name: act.name, args: act.args || {}, native: !!act.native, status: 'running', createdAt: Date.now(), reused: !!act.reused };
+  if (t.name === 'write_file') {
+    const ref = resolveCodeRef(t.args.content, t.args.path, collectCodeBlocks(chat.messages));
+    if (ref != null) { t.args = { ...t.args, content: ref + '\n' }; t.reused = true; }
+  }
   if (!TOOL_META[t.name]) {
     t.status = 'error';
     t.output = `Unbekanntes Werkzeug: ${t.name}`;
