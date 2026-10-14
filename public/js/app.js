@@ -6,7 +6,7 @@ import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, skillsApi } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, makeQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -683,7 +683,7 @@ const fileChip = (f) => `<div class="file-chip"><div class="fc-icon">${icon('fil
 
 function messageHtml(m, i, chat, isLastAi) {
   if (m.role === 'user') {
-    return `${m.topicStart ? '<div class="topic-sep"><span>Neues Thema</span></div>' : ''}<div class="msg user" id="m-${m.id}" data-id="${m.id}"><div class="msg-col">${attachmentsHtml(m)}
+    return `<div class="msg user" id="m-${m.id}" data-id="${m.id}"><div class="msg-col">${attachmentsHtml(m)}
       ${m.content ? `<div class="bubble">${escapeHtml(m.content)}</div>` : ''}
       <div class="msg-actions">
         <button class="icon-btn" data-action="copy" title="Kopieren">${icon('copy')}</button>
@@ -1354,7 +1354,12 @@ async function send() {
   const userMsg = { id: uid(), role: 'user', content: text, images: images.map((p) => p.base64), files, createdAt: Date.now() };
   // Themenwechsel? (bestimmt, wie viel vom bisherigen Chat die KI zu sehen bekommt)
   const { windowMsgs, olderMsgs } = topicWindow(chat.messages);
-  const textOf = (ms) => ms.filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content).slice(-6).map((m) => splitThink(m.content).text);
+  // Auch Suchbegriffe und Treffer (z. B. YouTube-Videos) zählen zum Thema – nicht nur der Antworttext
+  const textOf = (ms) => ms.slice(-12).map((m) => {
+    if (m.role === 'tool') return [m.args?.query, m.args?.path, ...(m.sources || []).map((x) => x.title)].filter(Boolean).join(' ');
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) return splitThink(m.content).text;
+    return '';
+  }).filter(Boolean);
   const shift = text && !images.length && !files.length ? topicShift(text, textOf(windowMsgs), textOf(olderMsgs)) : 'same';
   if (shift === 'new') userMsg.topicStart = true;
   if (shift === 'old') userMsg.fullContext = true;
@@ -1430,7 +1435,9 @@ async function generate(chat) {
     }
     // Klingt die Frage nach aktuellen Infos? Dann selbst suchen – auch Modelle ohne Werkzeuge bekommen echte Ergebnisse
     if (settings.webSearch && lastUser?.content && needsWeb(lastUser.content) && !controller.signal.aborted) {
-      const act = { name: 'web_search', args: { query: makeQuery(lastUser.content) } };
+      // Nachfrage ("und das allerneueste Video?") -> vorigen Suchbegriff wiederverwenden
+      const prevSearch = lastUser.topicStart ? null : [...topicWindow(chat.messages).windowMsgs].reverse().find((m) => m.role === 'tool' && m.name === 'web_search' && m.args?.query);
+      const act = { name: 'web_search', args: { query: webQuery(lastUser.content, prevSearch?.args.query) } };
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
       await runAction(chat, act, controller.signal);
     }

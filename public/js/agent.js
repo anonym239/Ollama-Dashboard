@@ -294,7 +294,7 @@ export function stripForeign(text, keepCode = true) {
 export function needsWeb(text) {
   const t = String(text || '');
   if (t.length > 1500 || /```/.test(t)) return false;
-  return /(youtube|youtuber|video|kanal|channel|tiktok|instagram|twitch|twitter|reddit|neueste?n?|neuste?n?|aktuell|heute|gerade|news|nachrichten|preis|kostet|kosten|wetter|wer ist|wer war|was ist (neu|los|passiert)|release|changelog|version|update|such\S* (im|nach|mal)|recherch|im internet|im web|google|online nach|link zu|wo finde|202[4-9])/i.test(t)
+  return /(youtube|youtuber|video|kanal|channel|tiktok|instagram|twitch|twitter|reddit|neu\p{L}{0,3}ste?[nrs]?|neute[nrs]?|upload|hochgeladen|letzte[nrs]? (video|folge|beitrag|post)|aktuell|heute|gerade|news|nachrichten|preis|kostet|kosten|wetter|wer ist|wer war|was ist (neu|los|passiert)|release|changelog|version|update|such\S* (im|nach|mal)|recherch|im internet|im web|google|online nach|link zu|wo finde|202[4-9])/iu.test(t)
     && !/(programmier|schreib\S* (mir )?(ein|einen|eine) (code|skript|programm)|erstell\S* (einen|eine) (ordner|datei))/i.test(t);
 }
 
@@ -303,6 +303,14 @@ export function makeQuery(text) {
   const stop = /^(kannst|könntest|du|mir|mich|bitte|mal|doch|einfach|was|ist|sind|das|die|der|den|dem|des|ein|eine|einen|und|oder|wie|wo|wer|wann|welche|welcher|welches|zeig|zeige|sag|sage|such|suche|finde|im|in|auf|internet|web|nach|für|über|mit|zu|zum|zur|es|gibt|heißt|aktuell|gerade|ich|will|möchte|wissen|weißt|hey|hallo|okay|ok|also|link|links)$/i;
   const words = String(text || '').replace(/[?!.,;:„“"()]/g, ' ').split(/\s+/).filter((w) => w && !stop.test(w));
   return (words.length ? words : String(text).split(/\s+/)).slice(0, 10).join(' ');
+}
+
+// Nachfrage zu einer vorherigen Suche ("und das allerneueste vom Upload?") – enthält kein eigenes Thema.
+// Dann wird der vorige Suchbegriff wiederverwendet statt nach "aller neute upload" zu suchen.
+const GENERIC_WEB = /^(aller\p{L}*|neu\p{L}*|neute\p{L}*|letzt\p{L}*|aktuell\p{L}*|upload\p{L}*|hochgeladen\p{L}*|video\p{L}*|folge|folgen|beitrag|post|posts|news|infos?|information\p{L}*|nochmal|wirklich|richtig|eigentlich|denn|überhaupt|davon|dazu|darüber|stand|erste\p{L}*|zweite\p{L}*|dritte\p{L}*|anderes?|andere\p{L}*|weitere\p{L}*|mehr|genauer|zuletzt|kürzlich|seit|gestern|morgen|woche|monat|titel|heißt|heisst|sagt|sagen|kommt|kam|wann)$/iu;
+export function webQuery(text, prevQuery = '') {
+  if (prevQuery && !topicTerms(text).some((w) => !GENERIC_WEB.test(w))) return prevQuery;
+  return makeQuery(text);
 }
 
 // ---------- Themenwechsel erkennen ----------
@@ -328,6 +336,8 @@ const overlaps = (a, b) => a.some((x) => b.some((y) => x === y || (x.length > 5 
 const PRONOUN_REF = /\b(das|dies|dieses|es)\b\s*(?=$|[?.!,]|noch|nochmal|genauer|bitte|auch|mal|für|in|als|zu|an|ab|um)/i;
 // Aufforderungen, etwas am Bisherigen zu ändern ("mach die Schlange grün"), sind immer Fortsetzungen
 const EDIT_VERBS = /^\s*(bitte\s+)?(mach|mache|ändere|änder|füge|füg|ergänze|entferne|lösch|lösche|verbessere|fixe|fix|korrigiere|erweitere|bau|baue|setz|setze|nimm|stell|stelle|pass|passe)\b/i;
+// Anschluss-Wörter am Anfang ("ok und …", "aber was …", "und jetzt …") – fast immer Nachfragen
+const FOLLOW_OPENER = /^\s*(ok(ay)?|oke|und|aber|also|jetzt|noch|achso|ach so|aha|ah|gut|alles klar|stimmt|hm+)\b/i;
 const BACKREF = /\b(diese|diesen|dazu|davon|darüber|damit|dafür|daran|darin|daraus|dabei|ihn|ihm|oben|vorhin|eben|vorher|deine antwort|dein code|der code|weiter|nochmal|noch mal|genauer|mehr dazu|beispiel|beispiele|zusammen|fass|übersetz|korrigier|verbesser|änder)\b/i;
 
 // 'same' = gleiches Thema, 'new' = neues Thema, 'old' = zurück zu einem früheren Thema
@@ -337,7 +347,9 @@ export function topicShift(text, windowTexts, olderTexts) {
   if (terms.length < 2 || String(text).length < 20) return 'same'; // kurze Rückfrage wie "und auf Englisch?"
   if (overlaps(terms, topicTerms(windowTexts.join(' ')))) return 'same';
   if (olderTexts.length && overlaps(terms, topicTerms(olderTexts.join(' ')))) return 'old';
-  if (BACKREF.test(text) || PRONOUN_REF.test(text) || EDIT_VERBS.test(text)) return 'same'; // "erklär das genauer", "merk dir das"
+  if (BACKREF.test(text) || PRONOUN_REF.test(text) || EDIT_VERBS.test(text) || FOLLOW_OPENER.test(text)) return 'same'; // "erklär das genauer", "ok und …"
+  // Nur klare, eigenständige Fragen mit eigenem Thema zählen als neu
+  if (!terms.some((w) => !GENERIC_WEB.test(w))) return 'same';
   return 'new';
 }
 

@@ -13,6 +13,12 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 1.8.1
+
+- **Nachfragen werden richtig verstanden:** „ok, und was ist das allerneueste vom Upload?“ gilt jetzt als Nachfrage und nicht mehr als neues Thema. Suchbegriffe und gefundene Treffer (z. B. YouTube-Videos) zählen mit zum Gesprächsthema.
+- **Nachfragen zu einer Suche** verwenden den vorigen Suchbegriff wieder (z. B. den Kanalnamen), statt nach einzelnen Wörtern zu suchen. Die KI bekommt so echte Ergebnisse statt zu raten.
+- Die Trennlinie „Neues Thema“ wird nicht mehr angezeigt. Die Erkennung läuft nur noch unsichtbar im Hintergrund und ist vorsichtiger.
+
 ### Neu in 1.8
 
 - **Code kompakt im Chat**: Schreibt die KI Dateien oder längeren Code, erscheint statt langer Code-Blöcke eine Karte **„N Dateien bearbeitet“** mit **+hinzugefügten / −gelöschten Zeilen** pro Datei und in der Summe.
