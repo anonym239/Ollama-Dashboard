@@ -1669,9 +1669,21 @@ async function generate(chat) {
   germanTip(chat);
 }
 
+// Reine Nachdenk-Modelle (deepseek-r1 & Co.) können kaum Smalltalk – für einfache Nachrichten ein Chat-Modell nehmen
+const REASONING_ONLY = /^(deepseek-r1|qwq|magistral|phi4-reasoning|openthinker|deepscaler|exaone-deep|cogito)/i;
+const CHAT_PREFERENCE = [/^gemma3:(?!1b)/, /^qwen3:(?!0\.6b)/, /^mistral-nemo/, /^mistral-small/, /^llama3\.1/, /^qwen2\.5:/, /^llama3\.2:3b/, /^gemma3/, /^llama3/, /^mistral/, /^qwen/];
+function chatModelFor(model) {
+  if (settings.smartModel === false || !REASONING_ONLY.test(model)) return model;
+  const names = models.map((m) => m.name).filter((n) => !REASONING_ONLY.test(n) && !/embed|vision|llava|coder|vl\b/i.test(n));
+  for (const re of CHAT_PREFERENCE) { const hit = names.find((n) => re.test(n)); if (hit) return hit; }
+  return model;
+}
+
 async function generateRound(chat, signal, turn = { done: new Set() }) {
   const assistant = getAssistant(chat.assistantId);
-  const model = chat.model;
+  const userNow = [...chat.messages].reverse().find((m) => m.role === 'user');
+  const isSimpleNow = isSimpleMessage(userNow?.content, { files: userNow?.files?.length, images: userNow?.images?.length }) && !userNow?.ranPrevious;
+  const model = isSimpleNow ? chatModelFor(chat.model) : chat.model;
   const caps = await getCaps(model);
   const agentOn = settings.agent && assistant.agent !== false;
   const webOn = settings.webSearch;
@@ -1684,7 +1696,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     || (m.role === 'assistant' && /```(befehl|ordner|lesen|liste|ollama|datei:)/.test(m.content || '')));
   const webResults = recent.some((m) => m.role === 'tool' && (m.name === 'web_search' || m.name === 'fetch_webpage'));
   // Einfache Nachricht ("ok egal", "Hallo")? Dann ohne Werkzeuge, Anleitungen und Nachdenken – sofort antworten
-  const simple = isSimpleMessage(lastUser?.content, { files: lastUser?.files?.length, images: lastUser?.images?.length }) && !lastUser?.ranPrevious;
+  const simple = isSimpleNow;
   const pIntent = simple ? { computer: false, web: false, remember: false, recall: false }
     : promptIntent(lastUser?.content, { recentComputer, web: webOn && (webResults || needsWeb(lastUser?.content)) });
   const tools = !useTools || simple ? null : TOOL_DEFS.filter((t) => {
@@ -2851,7 +2863,8 @@ function openSettings() {
           <option value="dark" ${settings.theme === 'dark' ? 'selected' : ''}>Dunkel</option></select></div>
         ${sw('sEnter', settings.sendOnEnter, 'Mit Enter senden', 'Shift+Enter für neue Zeile')}
         ${sw('sTitle', settings.autoTitle, 'Automatische Chat-Titel', 'Die KI gibt jedem Chat einen passenden Namen')}
-        ${sw('sThink', settings.think, 'Nachdenken erlauben', 'Für Modelle wie qwen3 oder deepseek-r1 – Gedankengang wird eingeklappt angezeigt')}</div>
+        ${sw('sThink', settings.think, 'Nachdenken erlauben', 'Für Modelle wie qwen3 oder deepseek-r1 – Gedankengang wird eingeklappt angezeigt')}
+        ${sw('sSmartModel', settings.smartModel !== false, 'Kurze Nachrichten mit einem Chat-Modell beantworten', 'Ist ein reines Nachdenk-Modell (z. B. deepseek-r1) gewählt, antwortet auf „Hallo“, „danke“ & Co. ein installiertes Chat-Modell (z. B. gemma3, qwen3) – schneller und natürlicher')}</div>
 
       <div><div class="section-title">Agent (Zugriff auf deinen PC)</div>
         ${sw('sAgent', settings.agent, 'Agent-Modus', 'KI darf Dateien/Ordner anlegen, Befehle ausführen und Ollama steuern')}
@@ -2923,6 +2936,7 @@ function openSettings() {
   bind('#sEnter', (t) => { settings.sendOnEnter = t.checked; });
   bind('#sTitle', (t) => { settings.autoTitle = t.checked; });
   bind('#sThink', (t) => { settings.think = t.checked; });
+  bind('#sSmartModel', (t) => { settings.smartModel = t.checked; });
   bind('#sAgent', (t) => { settings.agent = t.checked; });
   bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
   bind('#sPreview', (t) => { settings.autoPreview = t.checked; });

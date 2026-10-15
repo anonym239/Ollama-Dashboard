@@ -13,6 +13,10 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.2.3
+
+- **Kurze Nachrichten mit einem Chat-Modell:** Ist ein reines Nachdenk-Modell wie deepseek-r1 gewählt, beantwortet ein installiertes Chat-Modell (z. B. gemma3, qwen3, llama3) kurze Nachrichten wie „wie geht's?“ oder „danke“. Das ist schneller und klingt natürlicher. Über der Antwort steht, welches Modell geantwortet hat. Echte Aufgaben bekommt weiter dein gewähltes Modell. Abschaltbar unter Einstellungen → Darstellung & Chat.
+
 ### Neu in 2.2.2
 
 - **„Tools geladen“:** Bekommt die KI Werkzeuge, steht unter ihrem Namen z. B. „8 Tools geladen · Mehr anzeigen“. Ein Klick zeigt die Liste (Websuche, Terminal, Dateien speichern …), „Weniger anzeigen“ klappt sie wieder zu. Ohne Werkzeuge, z. B. bei „Hallo“, steht dort nichts.
