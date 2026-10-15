@@ -16,6 +16,25 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // Geheimer Schlüssel pro Serverstart: nur die eigene Oberfläche darf lokale Aktionen ausführen
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const IS_WIN = process.platform === 'win32';
+
+// Auch die Zertifikate von Windows nutzen (wie Chrome). Sonst scheitert jede Verbindung, wenn ein
+// Virenscanner HTTPS prüft (Avast, Kaspersky, Bitdefender …) – obwohl der Browser problemlos ins Netz kommt.
+try {
+  const tls = require('tls');
+  if (tls.getCACertificates && tls.setDefaultCACertificates) {
+    tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])]);
+  }
+} catch { /* ältere Node-Version: nur die eingebauten Zertifikate */ }
+
+// Verständlicher Grund statt "fetch failed"
+function netReason(e) {
+  const c = e?.cause?.code || e?.code || '';
+  if (/ENOTFOUND|EAI_AGAIN/.test(c)) return 'Adresse nicht gefunden (DNS)';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS/i.test(c + (e?.cause?.message || ''))) return 'Zertifikat abgelehnt (Virenscanner/Proxy?)';
+  if (/ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT/.test(c)) return `keine Verbindung (${c})`;
+  if (e?.name === 'AbortError') return 'Zeitüberschreitung';
+  return e?.message === 'fetch failed' ? `Verbindung fehlgeschlagen${c ? ` (${c})` : ''}` : e?.message || String(e);
+}
 let ollamaChild = null;
 let pageServed = false;
 
@@ -718,16 +737,20 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
   let results = [];
   const engines = [];
   const errors = [];
+  const raw = []; // alle Treffer – falls der strenge Filter nichts übrig lässt
+  let netErrors = 0;
   for (const key of order) {
     const [label, search] = ENGINES[key];
     try {
       const found = (await search(query, keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors, strong) }));
+      raw.push(...found.map((r) => ({ ...r, engine: label })));
       const good = found.filter((r) => r.score >= 0.75 && !seen.has(r.url));
       good.forEach((r) => seen.add(r.url));
       if (good.length) { results.push(...good); engines.push(label); }
-      else errors.push(`${label}: keine passenden Treffer`);
+      else errors.push(`${label}: ${found.length ? 'nichts Passendes' : 'keine Treffer'}`);
     } catch (e) {
-      errors.push(`${label}: ${e.message}`);
+      if (e?.message === 'fetch failed' || e?.name === 'AbortError' || e?.cause) netErrors++;
+      errors.push(`${label}: ${netReason(e)}`);
     }
     if (results.length >= 5 || engines.length >= 2) break;
   }
@@ -741,8 +764,21 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
       } catch { /* weiter */ }
     }
   }
+  // Immer noch nichts? Dann die besten Treffer mit wenigstens einem Suchbegriff nehmen (lieber etwas als nichts)
+  let loose = false;
+  if (!results.length && raw.length) {
+    const hay = (r) => `${r.title} ${r.snippet} ${r.url}`.toLowerCase();
+    const seenL = new Set();
+    results = raw.filter((r) => terms.some((t) => hay(r).includes(t)) && !seenL.has(r.url) && seenL.add(r.url))
+      .sort((a, b) => b.score - a.score).slice(0, 6);
+    if (results.length) { loose = true; engines.push(results[0].engine); }
+  }
   const ytRes = yt ? await yt : null;
-  if (!results.length && !ytRes?.results.length) throw new Error('Keine passenden Treffer gefunden – besteht eine Internetverbindung? (' + errors.join('; ') + ')');
+  if (!results.length && !ytRes?.results.length) {
+    // Ehrliche Fehlermeldung: kein Netz zu den Suchanbietern ODER nur nichts gefunden
+    if (netErrors === order.length) throw new Error(`Die Suchanbieter sind von der App aus nicht erreichbar (${errors.join('; ')}). Firewall oder Virenscanner blockieren evtl. das Dashboard.`);
+    throw new Error(`Zu „${query}“ wurde nichts Passendes gefunden (${errors.join('; ')}). Die Internetverbindung funktioniert – andere Suchbegriffe probieren.`);
+  }
   results.sort((a, b) => b.score - a.score);
   results = results.filter((r) => !/youtube\.com\/(watch|results)/.test(r.url)).slice(0, 8);
   // Die besten Seiten wirklich öffnen und die passenden Textstellen + Vorschau-Infos holen
@@ -758,7 +794,7 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
     results = [...ytRes.results.slice(0, 5), ...results].slice(0, 9);
     engines.unshift('YouTube');
   }
-  return { query, engine: engines.join(' + '), results, channel: ytRes?.channel || null };
+  return { query, engine: engines.join(' + '), results, channel: ytRes?.channel || null, loose };
 }
 
 // ---------- Befehle für Windows reparieren ----------
@@ -1012,7 +1048,6 @@ const APP_VERSION = process.env.OD_FAKE_VERSION || (() => {
 // Nur für Tests: alles außer dem eigentlichen Installieren durchspielen
 const UPDATE_DRYRUN = !!process.env.OD_UPDATE_DRYRUN;
 const UPDATE_DIR = path.join(require('os').tmpdir(), 'ollama-dashboard-update');
-const UPDATE_STATUS = path.join(UPDATE_DIR, 'status.json');
 const IS_PACKAGED = (() => { try { return require('node:sea').isSea(); } catch { return false; } })();
 let updateCache = null;
 let updateJob = { phase: 'idle' };
@@ -1092,40 +1127,6 @@ async function downloadTo(url, file, onProgress) {
   return hash.digest('hex');
 }
 
-// Kleines PowerShell-Skript: wartet, bis die App beendet ist, installiert und startet die App neu.
-// Schreibt jeden Schritt in status.json – so sieht die neue (oder alte) App, was passiert ist.
-// /SILENT zeigt ein kleines Fortschrittsfenster (keine Fragen); nach 5 Minuten wird abgebrochen.
-function updaterScript({ setupFile, exe, pid, log, allUsers = false, status = path.win32.join(path.win32.dirname(setupFile), 'status.json'), version = '' }) {
-  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
-  const dir = path.win32.dirname(exe);
-  const st = (phase, extra = '') => `Set-Content -LiteralPath ${q(status)} -Encoding UTF8 -Value ('{"phase":"${phase}","version":"${version}","at":' + [DateTimeOffset]::Now.ToUnixTimeMilliseconds() + '${extra}}')`;
-  return [
-    '$ErrorActionPreference = "SilentlyContinue"',
-    st('waiting'),
-    `Wait-Process -Id ${pid} -Timeout 30`,
-    `Stop-Process -Id ${pid} -Force`,
-    'Start-Sleep -Milliseconds 500',
-    st('installing'),
-    `$p = Start-Process -FilePath ${q(setupFile)} -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/NOCANCEL','/SP-','${allUsers ? '/ALLUSERS' : '/CURRENTUSER'}',${q(`/LOG="${log}"`)} -PassThru`,
-    '$code = -1',
-    'if ($p) { if ($p.WaitForExit(300000)) { $code = $p.ExitCode } else { Stop-Process -Id $p.Id -Force; $code = -2 } }',
-    `if ($code -eq 0) { ${st('done')} } else { ${st('failed', `,"code":' + $code + '`)} }`,
-    // Neue Version starten – oder bei einem Fehler die alte wieder, damit das Dashboard nicht einfach weg ist
-    `Start-Process -FilePath ${q(exe)} -ArgumentList '--nach-update' -WorkingDirectory ${q(dir)}`,
-    `if ($code -eq 0) { Remove-Item -LiteralPath ${q(setupFile)} -Force }`,
-    'Remove-Item -LiteralPath $PSCommandPath -Force',
-  ].join('\r\n');
-}
-
-// Was hat das letzte Update gemacht? (wird nach dem Neustart angezeigt)
-function lastUpdateResult() {
-  try {
-    const j = JSON.parse(fs.readFileSync(UPDATE_STATUS, 'utf8').replace(/^﻿/, ''));
-    if (Date.now() - j.at > 30 * 60_000) return null;
-    return j;
-  } catch { return null; }
-}
-
 async function installUpdate() {
   if (['download', 'verify', 'restarting'].includes(updateJob.phase)) return updateJob;
   const info = await checkUpdate(true);
@@ -1136,7 +1137,6 @@ async function installUpdate() {
   (async () => {
     const dir = UPDATE_DIR;
     fs.mkdirSync(dir, { recursive: true });
-    fs.rmSync(UPDATE_STATUS, { force: true });
     const setupFile = path.join(dir, setup.name);
     const sumsText = await (await fetch(sums.browser_download_url, { headers: { 'User-Agent': 'Ollama-Dashboard' }, signal: AbortSignal.timeout(30_000) })).text();
     const expected = sumsText.split(/\r?\n/).map((l) => l.trim().split(/\s+/)).find((x) => x[1] === setup.name)?.[0]?.toLowerCase();
@@ -1145,13 +1145,20 @@ async function installUpdate() {
     updateJob.phase = 'verify';
     if (got !== expected) { fs.rmSync(setupFile, { force: true }); throw new Error('Prüfsumme stimmt nicht – Update abgebrochen.'); }
     if (UPDATE_DRYRUN) { updateJob.phase = 'ready'; return; }
-    const script = path.join(dir, 'update.ps1');
-    fs.writeFileSync(script, '﻿' + updaterScript({ setupFile, exe: process.execPath, pid: process.pid, log: path.join(dir, 'setup.log'), allUsers: isProgramFiles(process.execPath), status: UPDATE_STATUS, version: info.latest }), 'utf8');
-    spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script], {
-      detached: true, stdio: 'ignore', windowsHide: true,
-    }).unref();
-    updateJob.phase = 'restarting';
-    setTimeout(() => process.exit(0), 1500);
+    // Das Setup selbst übernimmt jetzt: Es zeigt ein Fortschrittsfenster, schließt das Dashboard erst
+    // kurz vor dem Installieren (PrepareToInstall) und startet danach die neue Version (/UPDATE=1).
+    // Die App bleibt so lange offen – bricht das Setup ab, läuft sie einfach weiter.
+    const args = ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/SP-', '/UPDATE=1',
+      isProgramFiles(process.execPath) ? '/ALLUSERS' : '/CURRENTUSER', `/LOG=${path.join(dir, 'setup.log')}`];
+    updateJob.phase = 'installing';
+    updateJob.since = Date.now();
+    const child = spawn(setupFile, args, { detached: true, stdio: 'ignore' });
+    child.on('error', (e) => { updateJob = { phase: 'error', error: `Setup ließ sich nicht starten: ${e.message}`, canOpenSetup: true }; });
+    // Läuft die App noch, wenn das Setup fertig ist, hat es nicht installiert (abgebrochen oder Fehler)
+    child.on('exit', (code) => {
+      if (updateJob.phase !== 'installing') return;
+      updateJob = { phase: 'error', canOpenSetup: true, error: code ? `Das Setup wurde abgebrochen oder ist fehlgeschlagen (Code ${code}).` : 'Das Setup ist durchgelaufen, hat aber nichts installiert.' };
+    });
   })().catch((e) => { updateJob = { phase: 'error', error: e.message }; });
   return updateJob;
 }
@@ -1184,7 +1191,7 @@ async function handleLocal(req, res) {
       return json(res, 200, updateJob);
     }
     if (route === '/local/update/result' && req.method === 'GET') {
-      return json(res, 200, { current: APP_VERSION, result: lastUpdateResult(), log: UPDATE_DIR });
+      return json(res, 200, { current: APP_VERSION, result: null, log: UPDATE_DIR });
     }
     if (route === '/local/update/open-setup' && req.method === 'POST') {
       // Notlösung: das heruntergeladene Setup normal (mit Fenster) öffnen
@@ -1287,7 +1294,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, keyTerms, anchorTerms, strongTerms, scoreResult, startOllama, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, updaterScript, APP_VERSION };
+module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, keyTerms, anchorTerms, strongTerms, scoreResult, startOllama, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, APP_VERSION };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

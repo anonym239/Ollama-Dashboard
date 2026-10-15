@@ -102,20 +102,9 @@ export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, mo
   const parts = [];
   if (assistant?.systemPrompt?.trim()) parts.push(assistant.systemPrompt.trim());
   else parts.push(`Du bist ${assistant?.name || 'ein KI-Assistent'}, ein hilfreicher, kluger KI-Assistent.`);
-  parts.push(`Du läufst lokal auf dem Computer des Nutzers${model ? ` (Modell: ${model})` : ''}. Heute ist ${now}.
+  parts.push(`Heute ist ${now}. Antworte in der Sprache des Nutzers (meist Deutsch).`);
 
-So antwortest du:
-- Beantworte genau die Frage, die gestellt wurde – direkt, verständlich, ohne Umschweife. Bleib beim Thema.
-- Smalltalk beantwortest du kurz, natürlich und freundlich (1–2 Sätze). Beispiel: „Hallo, wie geht es dir?“ → „Hallo! Mir geht es gut, danke der Nachfrage. Wobei kann ich dir helfen?“
-- Schreibe korrektes, natürliches Deutsch wie ein Muttersprachler: richtige Fälle („ich danke dir“, nicht „dich“), keine englischen Einschübe wie „by the way“, keine wörtlichen Übersetzungen. Lieber kurze, klare Sätze.
-- Bei Wissensfragen: zuerst die Antwort, dann nur so viel Erklärung wie nötig.
-- Wiederhole keine Listen, Antworten oder Codes, die schon im Chat stehen – außer der Nutzer bittet ausdrücklich darum. Beziehe dich lieber kurz darauf („Befehl 3 von oben …“).
-- Will der Nutzer eine bestimmte Anzahl („zeig mir 3 Befehle“, „nur eins“), gib genau so viele – nicht mehr.
-- Erfinde nichts. Weißt du etwas nicht sicher (z. B. Neuigkeiten nach deinem Wissensstand), sag das ehrlich.
-- Antworte immer in der Sprache des Nutzers (meist Deutsch) – nie mit chinesischen oder anderen fremden Schriftzeichen.
-- Markdown nur, wo es hilft (Listen, Code in Codeblöcken).`);
-
-  if (memory.length) parts.push(`## Was du über den Nutzer weißt (nur nutzen, wenn es passt)\n${memory.map((f) => `- ${f}`).join('\n')}`);
+  if (memory.length) parts.push(`## Was du dir über den Nutzer gemerkt hast\n${memory.map((f) => `- ${f}`).join('\n')}`);
   if (knowledge?.passages?.length) {
     parts.push(`## Gespeichertes Wissen zur Frage (vom Nutzer gemerkt – genauer als dein allgemeines Wissen)\n\n${knowledge.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}`);
   }
@@ -188,8 +177,6 @@ Du bekommst echte Textstellen aus dem Internet. So nutzt du sie:
 kurzer genauer Suchbegriff
 \`\`\`
 - Am Ende kurz die passenden Quellen als Links.`);
-  } else if (webSearch) {
-    parts.push('Geht es um Aktuelles, das du nicht sicher weißt, kannst du im Internet suchen:\n```suche\nkurzer Suchbegriff\n```\nDanach aufhören, du bekommst die Ergebnisse.');
   }
   return parts.join('\n\n');
 }
@@ -263,6 +250,8 @@ export function detectLanguage(text) {
   return de >= en ? 'de' : 'en';
 }
 
+// Nur Modelle, die gern ins Chinesische wechseln, bekommen die kurze Sprach-Erinnerung
+export const DRIFTING_MODEL = /(deepseek|qwen|qwq|yi[:-]|glm|internlm|baichuan|minicpm)/i;
 export const LANGUAGE_REMINDER = {
   de: '\n\n(Denke und antworte ausschließlich auf Deutsch – ohne chinesische oder andere fremde Schriftzeichen.)',
   en: '\n\n(Think and answer only in English – no Chinese or other foreign characters.)',
@@ -280,12 +269,16 @@ export function stripForeign(text, keepCode = true) {
   return String(text || '').split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : clean(part))).join('');
 }
 
-// Braucht die Frage aktuelle Infos aus dem Netz? Dann sucht die App selbst – auch für Modelle ohne Werkzeuge
+// Braucht die Frage aktuelle Infos aus dem Netz? Nur bei klarem Bedarf – sonst antwortet die KI ganz normal.
+const WEB_EXPLICIT = /(im (internet|web|netz)|online (nach|such|schau)|googl|recherch|such\S* (mal |bitte )?(im|nach|online)|schau\S* (mal |bitte )?(im (netz|internet|web)|online|nach,? (was|wie|wer|ob))|link zu|quellen? (zu|für))/i;
+const WEB_FRESH = /(neueste?[nrs]?|neuste[nrs]?|neute[nrs]?|aktuelle[nrs]? (stand|version|preis|nachrichten|news|lage|ergebnis)|news|nachrichten|wetter|kostet|preis (von|für|der|des)|erschienen|release|youtube|video von|kanal von|tiktok|instagram|twitch|bundesliga|spielstand|ergebnis (von|des|der)|wer (ist|war) (der|die|das)? ?[A-ZÄÖÜ]|20(2[5-9]|3\d))/i;
 export function needsWeb(text) {
   const t = String(text || '');
   if (t.length > 1500 || /```/.test(t)) return false;
-  return /(youtube|youtuber|video|kanal|channel|tiktok|instagram|twitch|twitter|reddit|neu\p{L}{0,3}ste?[nrs]?|neute[nrs]?|upload|hochgeladen|letzte[nrs]? (video|folge|beitrag|post)|aktuell|heute|gerade|news|nachrichten|preis|kostet|kosten|wetter|wer ist|wer war|was ist (neu|los|passiert)|release|changelog|version|update|such\S* (im|nach|mal)|recherch|im internet|im web|google|online nach|link zu|wo finde|202[4-9])/iu.test(t)
-    && !/(programmier|schreib\S* (mir )?(ein|einen|eine) (code|skript|programm)|erstell\S* (einen|eine) (ordner|datei))/i.test(t);
+  if (/(programmier|schreib\S* (mir )?(ein|einen|eine) (code|skript|programm)|erstell\S* (einen|eine) (ordner|datei))/i.test(t)) return false;
+  if (WEB_EXPLICIT.test(t)) return true;
+  // "Neueste/aktuelle …" nur, wenn es wirklich eine Frage nach etwas Bestimmtem ist (nicht Smalltalk)
+  return WEB_FRESH.test(t) && /[?]|^(was|wer|wie|wann|wo|welche|gibt|zeig|nenn|sag)/i.test(t.trim()) && t.trim().split(/\s+/).length >= 3;
 }
 
 // Suchbegriff aus einer Frage machen (Füllwörter und Bitten wie "recherchiere im Internet" raus)
@@ -353,7 +346,6 @@ export function intentHints(text, { newTopic = false } = {}) {
   const hints = [];
   const want = wantedCount(t);
   if (want && Number.isFinite(want.n)) hints.push(`Der Nutzer möchte genau ${want.n === 1 ? 'eine Sache' : `${want.n} Sachen`}${want.random ? ' (frei gewählt)' : ''} – nicht mehr. Wiederhole keine Liste von vorher.`);
-  if (newTopic) hints.push('Das ist eine NEUE, eigenständige Frage. Beantworte sie allgemein und für sich – beziehe sie NICHT auf vorherige Themen.');
   if (/\b(merk|merke|merken|behalt|vergiss nicht|speicher dir|notier dir)\b/i.test(t)) {
     hints.push('Der Nutzer möchte, dass du dir etwas merkst: Schreibe einen ```merken```-Block mit 1–3 kurzen Sätzen (das Wichtigste, worauf er sich bezieht) und bestätige in einem Satz. Wiederhole NICHT deine vorige Antwort.');
   }
@@ -748,4 +740,30 @@ export function runActionsFor(blocks, platform = 'win32', want = null) {
     }
   }
   return acts;
+}
+
+// ---------- Automatisch merken, was der Nutzer über sich erzählt ----------
+// Gibt [{ key, fact }] zurück. key: gleiche Art von Info ersetzt die alte (z. B. neuer Wohnort).
+const WORD = "[A-ZÄÖÜ][\\wäöüß-]+";
+const FACT_RULES = [
+  [new RegExp(`\\b(?:ich hei(?:ß|ss)e|mein name ist|nenn mich)\\s+(${WORD})`, 'i'), 'name', (m) => `Der Nutzer heißt ${m[1]}.`],
+  [/\bich bin (\d{1,2}) (?:jahre|jahr)\b/i, 'alter', (m) => `Der Nutzer ist ${m[1]} Jahre alt.`],
+  [new RegExp(`\\b(?:ich |und )(?:wohne|lebe) in (${WORD}(?: ${WORD})?)`, 'i'), 'wohnort', (m) => `Der Nutzer wohnt in ${m[1]}.`],
+  [new RegExp(`\\bich komme aus (${WORD}(?: ${WORD})?)`, 'i'), 'herkunft', (m) => `Der Nutzer kommt aus ${m[1]}.`],
+  [/\bich arbeite als ([\wäöüß -]{3,30}?)(?=[.,!?]|$| und )/i, 'beruf', (m) => `Der Nutzer arbeitet als ${m[1].trim()}.`],
+  [/\bich bin (schüler|schülerin|student|studentin|azubi|auszubildende[r]?|rentner|rentnerin|lehrer|lehrerin|entwickler|entwicklerin|programmierer|programmiererin)\b/i, 'beruf', (m) => `Der Nutzer ist ${m[1]}.`],
+  [/\bmein(?:e|en)? lieblings(\w+) (?:ist|sind) ([^.,!?\n]{2,40})/i, null, (m) => `Lieblings${m[1].toLowerCase()} des Nutzers: ${m[2].trim()}.`],
+  [/\bich (programmiere|spiele|zocke) (?:gern(?:e)? |oft |viel )?([^.,!?\n]{2,40})/i, null, (m) => `Der Nutzer ${{ programmiere: 'programmiert', spiele: 'spielt', zocke: 'zockt' }[m[1].toLowerCase()]} gern ${m[2].trim()}.`],
+  [/\bich (?:mag|liebe) (?!(?:das|es|dich|die|den|dass|nicht|keine?n?)\b)([^.,!?\n]{2,40})/i, null, (m) => `Der Nutzer mag ${m[1].trim()}.`],
+  [/\b(?:antworte|sprich|schreib) (?:mir )?(?:bitte )?(?:immer )?(kurz|ausführlich|locker|förmlich|mit du|per du|mit sie|einfach|auf englisch|auf deutsch)\b/i, 'stil', (m) => `Der Nutzer möchte Antworten: ${m[1]}.`],
+];
+export function extractFacts(text) {
+  const t = String(text || '');
+  if (t.length > 600 || /```/.test(t)) return []; // lange Texte und Code nicht (eingefügte Texte sind nicht der Nutzer)
+  const out = [];
+  for (const [re, key, make] of FACT_RULES) {
+    const m = t.match(re);
+    if (m) out.push({ key: key || make(m).toLowerCase(), fact: make(m) });
+  }
+  return out;
 }

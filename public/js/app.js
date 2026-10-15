@@ -6,7 +6,7 @@ import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, updates } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, extractFacts, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, DRIFTING_MODEL, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -260,7 +260,7 @@ function applyTheme() {
 
 // Avatar = App-Logo (Stern), Standard-Assistent im Logo-Verlauf, andere in ihrer Farbe
 const LOGO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l2.3 6.5 6.5 2.3-6.5 2.3L12 20.8l-2.3-6.5L3.2 12l6.5-2.3z" fill="#fff"/></svg>';
-const avatarBg = (a) => (!a.color || a.color === '#7c5cff' ? 'var(--grad)' : `linear-gradient(135deg, ${escapeHtml(a.color)}, color-mix(in srgb, ${escapeHtml(a.color)} 55%, #22c3ee))`);
+const avatarBg = (a) => (!a.color || a.color === '#7c5cff' ? 'var(--brand)' : `linear-gradient(135deg, ${escapeHtml(a.color)}, color-mix(in srgb, ${escapeHtml(a.color)} 55%, #22c3ee))`);
 const avatarHtml = (a, cls = '', style = '') => `<div class="avatar ${cls}" style="background:${avatarBg(a)};${style}">${LOGO}</div>`;
 
 // ---------------------------------------------------------------------------
@@ -769,9 +769,10 @@ function updateBannerHtml() {
     const text = s.phase === 'download' ? `Wird heruntergeladen … ${s.pct ?? 0} %${s.total ? ` (${mb(s.received || 0)} von ${mb(s.total)} MB)` : ''}`
       : s.phase === 'verify' ? 'Wird geprüft …'
       : s.phase === 'ready' ? 'Heruntergeladen und geprüft (Testmodus).'
+      : s.phase === 'installing' ? `Das Setup läuft – ein kleines Fenster zeigt den Fortschritt.${s.allUsers ? ' Windows fragt evtl. nach Administratorrechten: bitte mit „Ja“ bestätigen.' : ''} Das Dashboard schließt sich gleich kurz und startet von selbst neu … ${secs} s`
       : `Wird installiert – ein kleines Setup-Fenster zeigt den Fortschritt.${s.allUsers ? ' Windows fragt nach Administratorrechten: bitte mit „Ja“ bestätigen (evtl. blinkt es unten in der Taskleiste).' : ''} Die App startet danach von selbst neu … ${secs} s`;
-    const late = s.phase === 'restarting' && secs > 75;
-    return banner('', s.phase === 'restarting' ? 'loader' : 'download', `Update auf v${escapeHtml(s.version || '')}`, text,
+    const late = (s.phase === 'restarting' || s.phase === 'installing') && secs > 90;
+    return banner('', s.phase === 'restarting' || s.phase === 'installing' ? 'loader' : 'download', `Update auf v${escapeHtml(s.version || '')}`, text,
       late ? `<button class="btn btn-sm" data-banner="update-open-setup">${icon('external')} Setup selbst öffnen</button>${updateInfo?.url ? `<a class="btn btn-sm" href="${escapeHtml(updateInfo.url)}" target="_blank" rel="noopener">Download-Seite</a>` : ''}`
         : `<div style="width:160px">${progressHtml(s.phase === 'download' ? s.pct : null)}</div>`);
   }
@@ -816,7 +817,7 @@ async function startUpdate() {
 async function pollUpdate() {
   let s;
   try { s = await updates.status(); } catch { waitForRestart(); return; }
-  if (s.phase === 'error') { lsSet('od.updating', null); updateState = { phase: 'error', error: s.error }; renderBanner(); return; }
+  if (s.phase === 'error') { lsSet('od.updating', null); updateState = { phase: 'error', error: s.error, canOpenSetup: s.canOpenSetup }; renderBanner(); return; }
   updateState = { ...s, pct: s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : null };
   if (s.phase === 'ready') { renderBanner(); return; }
   renderBanner();
@@ -1536,6 +1537,7 @@ async function send() {
   if (shift === 'new') userMsg.topicStart = true;
   if (shift === 'old') userMsg.fullContext = true;
   chat.messages.push(userMsg);
+  learnFacts(text);
   if (chat.title === 'Neuer Chat') chat.title = (text || files[0]?.name || 'Bild').replace(/\s+/g, ' ').slice(0, 48);
   chat.updatedAt = Date.now();
   pending = [];
@@ -1559,15 +1561,11 @@ const UNSURE = /(ich weiß (es )?nicht|weiß ich nicht|nicht sicher|keine (aktue
 const INFO_ONLY_TOOLS = new Set(['web_search', 'fetch_webpage', 'search_chats', 'remember', 'remember_text', 'select_skills']);
 const INFO_TOOLS = new Set(['web_search', 'fetch_webpage', 'run_command', 'read_file', 'list_directory', 'list_models', 'running_models']);
 
-// Ab welcher Nachricht gehört der Chat zum aktuellen Thema?
+// Was die KI vom Chat zu sehen bekommt: der ganze Chat (nur bei sehr langen Chats die letzten 60 Nachrichten).
+// Früher wurde bei einem "neuen Thema" abgeschnitten – dann hat sich die KI an Früheres nicht mehr erinnert.
+const HISTORY_MAX = 60;
 function topicWindow(messages) {
-  let start = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== 'user') continue;
-    if (m.fullContext) { start = 0; break; }
-    if (m.topicStart) { start = i; break; }
-  }
+  const start = Math.max(0, messages.length - HISTORY_MAX);
   return { windowMsgs: messages.slice(start), olderMsgs: messages.slice(0, start), start };
 }
 
@@ -1679,7 +1677,10 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   let droppedImages = false;
   // Bei neuem Thema nur das aktuelle Thema schicken – sonst vermischt die KI alles.
   // Fragt der Nutzer nach Früherem ("was hab ich vorhin geschrieben?"), bekommt die KI den ganzen Chat.
-  const windowMsgs = pIntent.recall ? chat.messages.slice(-40) : topicWindow(chat.messages).windowMsgs;
+  const windowMsgs = topicWindow(chat.messages).windowMsgs;
+  // Ergebnisse früherer Runden (Suchergebnisse, Terminal-Ausgaben) gekürzt – die Nachrichten selbst bleiben vollständig
+  const turnStart = windowMsgs.lastIndexOf(lastUser);
+  const short = (m, text) => (windowMsgs.indexOf(m) < turnStart && text.length > 700 ? `${text.slice(0, 600)}\n[… gekürzt]` : text);
   for (const m of windowMsgs) {
     if (m.role === 'user') {
       const o = { role: 'user', content: buildContent(m.content, m.files) || '(Bild)' };
@@ -1693,7 +1694,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       messages.push(o);
     } else if (m.role === 'tool') {
       if (m.name === 'select_skills') continue; // nur Anzeige
-      const content = m.output || STATUS_TEXT[m.status] || '';
+      const content = short(m, m.output || STATUS_TEXT[m.status] || '');
       if (useTools && m.native) messages.push({ role: 'tool', content, tool_name: m.name });
       else if (m.name === 'search_chats' || m.name === 'web_search') messages.push({ role: 'user', content: `[${m.name === 'web_search' ? 'Ergebnis der Websuche' : 'Erinnerungen aus früheren Chats'}]\n${content}` });
       else {
@@ -1704,10 +1705,10 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   // Unsichtbarer Sprach-Hinweis direkt an der letzten Nutzer-Nachricht (wirkt bei Qwen & Co. am zuverlässigsten)
   for (let k = messages.length - 1; k > 0; k--) {
     if (messages[k].role === 'user') {
-      const translate = /(übersetz|translate|auf (englisch|spanisch|französisch|italienisch|türkisch|polnisch|russisch|arabisch|deutsch)|wie sagt man)/i.test(lastUser?.content || '');
+      const translate = DRIFTING_MODEL.test(model) && /(übersetz|translate|auf (englisch|spanisch|französisch|italienisch|türkisch|polnisch|russisch|arabisch|deutsch)|wie sagt man)/i.test(lastUser?.content || '');
       const reminder = translate
         ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
-        : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
+        : DRIFTING_MODEL.test(model) ? LANGUAGE_REMINDER[detectLanguage(lastUser?.content)] : '';
       const ranHint = lastUser?.ranPrevious ? '\n\n(Die App hat den Code aus deiner vorigen Antwort gerade selbst ausgeführt – das echte Ergebnis steht oben. Schreibe den Code NICHT noch einmal, führe ihn nicht erneut aus und wiederhole KEINE Liste von vorher. Erkläre in 2–4 Sätzen, was der ausgeführte Befehl gemacht hat und was herausgekommen ist. Gab es einen Fehler, schlage eine Lösung vor.)' : '';
       const savedHint = lastUser?.remembered?.length ? `\n\n(Die App hat das bereits dauerhaft gespeichert: ${lastUser.remembered.join(', ')}. Schreibe KEINEN merken-Block. Bestätige kurz und fasse das Gemerkte in 2–3 Sätzen zusammen.)` : '';
       messages[k] = { ...messages[k], content: messages[k].content + ranHint + (savedHint || intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart })) + reminder };
@@ -2221,6 +2222,23 @@ const memory = {
   },
 };
 
+
+// Infos über den Nutzer automatisch merken ("ich heiße …", "ich wohne in …") – ohne "merk dir"
+const memoryKeys = () => (settings.memoryKeys ||= {});
+function learnFacts(text) {
+  const found = extractFacts(text);
+  if (!found.length) return;
+  const saved = [];
+  for (const { key, fact } of found) {
+    const old = memoryKeys()[key];
+    if (old === fact) continue;
+    if (old) settings.memory = settings.memory.filter((f) => f !== old); // alte Info derselben Art ersetzen
+    if (!settings.memory.some((f) => f.toLowerCase() === fact.toLowerCase())) settings.memory.push(fact);
+    memoryKeys()[key] = fact;
+    saved.push(fact);
+  }
+  if (saved.length) { saveSettings(); toast(`Gemerkt: ${saved.join(' ')}`); }
+}
 
 // Alle Nachrichten des Nutzers in diesem Chat (für "was hab ich vorhin geschrieben?")
 function userMessageList(chat) {

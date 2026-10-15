@@ -63,11 +63,28 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "
 [Run]
 Filename: "https://ollama.com/download"; Description: "{cm:OpenOllamaDownload}"; Flags: shellexec postinstall skipifsilent unchecked; Check: not OllamaInstalled
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+; Update aus dem Dashboard heraus (/UPDATE=1): neue Version danach automatisch starten
+Filename: "{app}\{#MyAppExe}"; Parameters: "--nach-update"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser skipifnotsilent; Check: IsUpdate
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#MyAppExe} /F"; Flags: runhidden; RunOnceId: "StopDashboard"
 
 [Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
+// Erst unmittelbar vor dem Installieren das laufende Dashboard schließen (nicht schon beim Herunterladen)
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM {#MyAppExe} /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(800);
+  Result := '';
+end;
+
 function OllamaInstalled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{localappdata}\Programs\Ollama\ollama.exe'))

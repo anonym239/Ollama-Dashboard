@@ -94,50 +94,6 @@ async function test(name, fn) {
   });
   await test('Version wird mitgeliefert', () => assert.match(srv.APP_VERSION, /^\d+\.\d+\.\d+$/));
   if (IS_WIN) {
-    // Echtes Update-Skript mit einem Schein-Setup und einer Schein-App ausführen
-    await test('Update-Skript: wartet, installiert still, startet neu', async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-upd-'));
-      const appDir = path.join(dir, 'App Ordner');
-      fs.mkdirSync(appDir);
-      const setupFile = path.join(dir, 'Setup.cmd');
-      const exe = path.join(appDir, 'App.cmd');
-      fs.writeFileSync(setupFile, `@echo args=%*> "${path.join(dir, 'setup-args.txt')}"\r\n`);
-      // Hinweis: "echo 1> datei" wäre eine Umleitung – deshalb steht ein Text davor
-      fs.writeFileSync(exe, `@echo neu=%1> "${path.join(dir, 'started.txt')}"\r\n`);
-      const dummy = spawn('cmd.exe', ['/c', 'ping -n 3 127.0.0.1 >nul'], { stdio: 'ignore' });
-      const script = path.join(dir, 'update.ps1');
-      fs.writeFileSync(script, '﻿' + srv.updaterScript({ setupFile, exe, pid: dummy.pid, log: path.join(dir, 'setup.log') }), 'utf8');
-      await new Promise((ok) => spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { stdio: 'ignore' }).on('exit', ok));
-      for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'started.txt')); i++) await new Promise((r) => setTimeout(r, 250));
-      const args = fs.readFileSync(path.join(dir, 'setup-args.txt'), 'utf8');
-      assert.match(args, /\/SILENT/);
-      assert.match(args, /\/LOG="/);
-      assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), 'neu=--nach-update');
-      assert.ok(!fs.existsSync(setupFile), 'Setup wurde nicht aufgeräumt');
-      const st = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8').replace(/^\ufeff/, ''));
-      assert.strictEqual(st.phase, 'done', JSON.stringify(st));
-      fs.rmSync(dir, { recursive: true, force: true });
-    });
-    await test('Update-Skript: Setup schlägt fehl -> Status "failed", alte App startet wieder', async () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-upd-'));
-      const setupFile = path.join(dir, 'Setup.cmd');
-      const exe = path.join(dir, 'App.cmd');
-      fs.writeFileSync(setupFile, '@exit /b 5\r\n');
-      fs.writeFileSync(exe, `@echo neu=%1> "${path.join(dir, 'started.txt')}"\r\n`);
-      const dummy = spawn('cmd.exe', ['/c', 'ping -n 2 127.0.0.1 >nul'], { stdio: 'ignore' });
-      const script = path.join(dir, 'update.ps1');
-      fs.writeFileSync(script, '\ufeff' + srv.updaterScript({ setupFile, exe, pid: dummy.pid, log: path.join(dir, 'setup.log'), version: '9.9.9' }), 'utf8');
-      await new Promise((ok) => spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { stdio: 'ignore' }).on('exit', ok));
-      for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'started.txt')); i++) await new Promise((r) => setTimeout(r, 250));
-      const st = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8').replace(/^\ufeff/, ''));
-      assert.deepStrictEqual([st.phase, st.code, st.version], ['failed', 5, '9.9.9']);
-      assert.ok(fs.existsSync(path.join(dir, 'started.txt')), 'App wurde nicht wieder gestartet');
-      assert.ok(fs.existsSync(setupFile), 'Setup sollte zum manuellen Öffnen bleiben');
-      fs.rmSync(dir, { recursive: true, force: true });
-    });
-  }
-
-  if (IS_WIN) {
     console.log('\nOllama starten');
     await test('Start über unsichtbare Konsole, nur einmal bei Doppelklick', async () => {
       // Ersatz für ollama.exe: ein harmloses Windows-Programm

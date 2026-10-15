@@ -13,6 +13,19 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.1.0
+
+- **Update per Klick neu gebaut:** Das Dashboard bleibt beim Herunterladen offen. Danach startet das Setup sichtbar mit Fortschrittsfenster. Erst unmittelbar vor dem Installieren schließt es das Dashboard, installiert und startet die neue Version selbst. Bricht das Setup ab, läuft das Dashboard einfach weiter und zeigt den Grund an.
+- **Normale Antworten:** Die KI bekommt fast keine Zusatz-Anweisungen mehr und antwortet wie ohne Dashboard. Websuche, Zugriff auf den PC und Gedächtnis kommen nur dazu, wenn du sie brauchst.
+- **Websuche nur bei echtem Bedarf:** Wörter wie „heute“, „gerade“ oder „Update“ lösen keine Suche mehr aus. Gesucht wird, wenn du darum bittest oder nach Neuem fragst (z. B. „Was ist die neueste …?“).
+- **Websuche zuverlässiger:**
+  - Die App nutzt jetzt auch die Windows-Zertifikate. Dadurch klappt die Suche auch mit Virenscannern, die HTTPS prüfen.
+  - Fehlermeldungen sagen ehrlich, ob die Suchanbieter nicht erreichbar sind oder nur nichts Passendes gefunden wurde. Kein falsches „keine Internetverbindung“ mehr.
+- **Gedächtnis:**
+  - Die KI sieht den ganzen Chat und vergisst frühere Nachrichten nicht mehr.
+  - Was du über dich erzählst („ich heiße …“, „ich wohne in …“, „mein Lieblingsspiel ist …“), merkt sich die App automatisch für alle Chats.
+- **Schlichtes Design:** neutrale Grautöne statt Farbverläufen, Antworten ohne großes Symbol davor, ruhige Knöpfe.
+
 ### Neu in 2.0.5
 
 - **Anzahl wird beachtet:** „Führ eins davon aus“, „einen zufälligen“, „zwei davon“ oder „alle“ führt genau so viele Befehle aus.

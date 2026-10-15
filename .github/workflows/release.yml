@@ -82,6 +82,35 @@ jobs:
         shell: pwsh
         run: '& $env:ISCC "/DMyAppVersion=${{ steps.v.outputs.version }}" installer\setup.iss'
 
+      - name: Update-Test (installieren, App starten, drüber updaten, neue App läuft)
+        if: steps.v.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $setup = "dist\OllamaDashboard-Setup-${{ steps.v.outputs.version }}.exe"
+          $dir = "$env:RUNNER_TEMP\od-update-test"
+          $env:NO_OPEN = "1"; $env:PORT = "3997"
+          # 1) Normal installieren
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER',"/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installation fehlgeschlagen: $($p.ExitCode)" }
+          # 2) App starten
+          $app = Start-Process -FilePath "$dir\OllamaDashboard.exe" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 4
+          if (-not (Invoke-WebRequest -Uri "http://localhost:3997/" -UseBasicParsing).Content.Contains('Ollama Dashboard')) { throw 'App antwortet nicht' }
+          # 3) So updaten, wie das Dashboard es tut – die laufende App muss geschlossen und neu gestartet werden
+          $u = Start-Process -FilePath $setup -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCANCEL','/SP-','/UPDATE=1','/CURRENTUSER',"/DIR=$dir","/LOG=$env:RUNNER_TEMP\od-update.log" -Wait -PassThru
+          Get-Content "$env:RUNNER_TEMP\od-update.log" -Tail 15
+          if ($u.ExitCode -ne 0) { throw "Update fehlgeschlagen: $($u.ExitCode)" }
+          if (-not $app.HasExited) { throw 'Alte App wurde nicht geschlossen' }
+          # 4) Neue App läuft wieder
+          $ok = $false
+          for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 1
+            try { $ok = (Invoke-WebRequest -Uri "http://localhost:3997/" -UseBasicParsing).StatusCode -eq 200 } catch { }
+          }
+          Get-Process OllamaDashboard -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $ok) { throw 'Neue App wurde nach dem Update nicht gestartet' }
+          Write-Host 'OK – Update schließt die App, installiert und startet sie neu.'
+
       - name: Portable ZIP erstellen
         if: steps.v.outputs.skip != 'true'
         shell: pwsh
@@ -103,6 +132,10 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
 
+      - name: Release-Text (nur die Neuerungen dieser Version)
+        if: steps.v.outputs.skip != 'true'
+        run: node scripts/release-notes.js ${{ steps.v.outputs.version }} > dist/RELEASE_BODY.md
+
       - name: GitHub-Release veröffentlichen
         if: steps.v.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
@@ -110,7 +143,7 @@ jobs:
           tag_name: v${{ steps.v.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: Ollama Dashboard v${{ steps.v.outputs.version }}
-          body_path: RELEASE_NOTES.md
+          body_path: dist/RELEASE_BODY.md
           files: |
             dist/OllamaDashboard-Setup-${{ steps.v.outputs.version }}.exe
             dist/OllamaDashboard-Portable-${{ steps.v.outputs.version }}-win-x64.zip
