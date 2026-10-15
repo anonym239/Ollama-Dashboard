@@ -991,11 +991,9 @@ function thinkPhrase(m, chat = currentChat()) {
   return m?.thinking ? 'Denkt nach' : 'Überlegt';
 }
 
-// Klassische Denk-Animation: Kugeln im Kreis – am Ende jeder Runde springt eine unten heraus und hüpft links wieder hinein
+// Klassischer Lade-Kreis: dünner Ring, auf dem ein farbiger Bogen gleichmäßig kreist
 function thinkIndicator(label) {
-  const dots = Array.from({ length: 8 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
-  const sync = `animation-delay:-${Date.now() % 2400}ms`;
-  return `<div class="think-ind" role="status"><span class="ti-spin" aria-hidden="true"><span class="ti-dots" style="${sync}">${dots}</span><b class="ti-hop" style="${sync}"></b></span>`
+  return `<div class="think-ind" role="status"><span class="ti-ring" aria-hidden="true" style="animation-delay:-${Date.now() % 900}ms"></span>`
     + `<span class="ti-label" style="${shimDelay()}">${label}</span><span class="ti-meta" data-ti></span></div>`;
 }
 
