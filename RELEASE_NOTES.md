@@ -13,6 +13,19 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.0.0
+
+- **Normale, passende Antworten:** Die KI bekommt nur noch die Anleitung, die zur Nachricht passt. Bei „Hallo, wie geht's?“ antwortet sie kurz und natürlich, ohne Terminal-Regeln und Werkzeuge im Hinterkopf. Computer-Anleitung, Websuche und Erinnerungen kommen nur dazu, wenn du danach fragst.
+- **Skills entfernt:** Der Skill-Ordner und die Skill-Auswahl sind weg. Sie haben kleine Modelle eher verwirrt. Beim Update wird der alte Ordner gelöscht.
+- **Bessere Websuche:** Bitten wie „recherchiere bitte im Internet“ landen nicht mehr im Suchbegriff. Treffer müssen das eigentliche Thema enthalten (z. B. „RTX“), sonst fliegen sie raus. Keine Duden-Seiten mehr bei „neuste RTX Grafikkarte“. Bei „neueste …“ wird die aktuelle Jahreszahl mitgesucht.
+- **Mehr CMD-Wissen:** Eine kompakte Windows-CMD-Anleitung mit den richtigen Befehlen (statt Linux-Befehlen). Schlägt ein Befehl fehl oder gibt es ihn nicht, sucht die KI den richtigen Befehl im Web, statt zu raten.
+- **Lernt dazu, auch für offline:** Befehle, die nach einem Fehler oder einer Websuche geklappt haben, merkt sich die App und nutzt sie wieder. Suchergebnisse werden gespeichert: Fällt das Internet aus, antwortet die KI aus früheren Suchen. Beides steht unter Einstellungen → Gedächtnis.
+- **Merkfunktion im Chat:** Fragst du „was hab ich vorhin geschrieben?“, bekommt die KI den ganzen Chat und alle deine Nachrichten.
+- **Spam-Schutz:** Schreibt die KI in einer Schleife immer wieder dasselbe, wird die Antwort sofort gestoppt. Pro Antwort gibt es höchstens 5 Terminal-Befehle, und derselbe Befehl läuft nur einmal. Platzhalter wie „@befehl“ werden nie ausgeführt. Dazu kommt eine Wiederholungsstrafe für das Modell.
+- **Ollama starten öffnet keine CMD-Fenster mehr:** Ollama läuft mit einer unsichtbaren Konsole, und ein Doppelklick startet es nur einmal.
+- **Neue Denk-Animation:** eine leuchtende, sich verformende Energiekugel mit kreisenden Lichtpunkten, wechselnde Statustexte und Wellen-Balken.
+- **Schimmer-Effekt:** Was gerade läuft (Nachdenken, Websuche, Terminal), schimmert hell von links nach rechts.
+
 ### Neu in 1.9.0
 
 - **Automatische Updates:** Gibt es eine neue Version, erscheint oben „Update verfügbar“. Ein Klick auf **„Jetzt installieren“** reicht: Die App lädt das Setup herunter, prüft die Prüfsumme, installiert still im Hintergrund, startet neu und lädt die Seite selbst neu.

@@ -39,20 +39,6 @@ async function test(name, fn) {
   await test('"öffne ein CMD" nutzt das vorhandene KI-Terminal', () => assert.match(fix('start cmd /k'), /^echo /));
   await test('"cat" in Texten bleibt', () => assert.strictEqual(fix('echo concat category'), 'echo concat category'));
 
-  console.log('\nSkills');
-  await test('Mitgelieferte Skills lassen sich lesen', () => {
-    const list = srv.loadSkills();
-    assert.ok(list.length >= 15, `nur ${list.length} Skills`);
-    for (const sk of list) {
-      assert.ok(sk.name && sk.content.length > 100, `${sk.file} ist leer`);
-      assert.ok(sk.always || sk.triggers.length, `${sk.file} hat keine Auslöser`);
-    }
-  });
-  await test('Skill-Kopfbereich wird erkannt (auch mit BOM und CRLF)', () => {
-    const sk = srv.parseSkill('x.skill', '\ufeff---\r\nname: Test\r\ntriggers: a, b c\r\nalways: true\r\n---\r\nInhalt');
-    assert.deepStrictEqual([sk.name, sk.triggers, sk.always, sk.content], ['Test', ['a', 'b c'], true, 'Inhalt']);
-  });
-
   console.log('\nWebsuche & Vorschau');
   await test('YouTube-Daten werden gelesen (inkl. Klammern in Titeln)', () => {
     const html = '<script>var ytInitialData = {"a":[{"channelRenderer":{"channelId":"UC1","title":{"simpleText":"Kanal"},"navigationEndpoint":{"browseEndpoint":{"canonicalBaseUrl":"/@kanal"}}}},{"videoRenderer":{"videoId":"abcdefghijk","title":{"runs":[{"text":"Video {1} \\"Test\\""}]},"ownerText":{"runs":[{"text":"Kanal"}]},"publishedTimeText":{"simpleText":"vor 1 Tag"}}},{"lockupViewModel":{"contentId":"zyxwvutsrqp","contentType":"LOCKUP_CONTENT_TYPE_VIDEO","metadata":{"lockupMetadataViewModel":{"title":{"content":"Neues Format"}}}}}]};</script>';
@@ -71,14 +57,20 @@ async function test(name, fn) {
     assert.ok(srv.scoreResult({ title: 'Ollama', snippet: 'Run models', url: 'https://ollama.com/' }, t, a) >= 0.75);
   });
 
+  await test('"neuste RTX Grafikkarte" findet keine Duden-Seite', () => {
+    const q = 'neuste RTX Graftikkarte 2026';
+    const t = srv.keyTerms(q);
+    const a = srv.anchorTerms(q, t);
+    const st = srv.strongTerms(q);
+    assert.strictEqual(srv.scoreResult({ title: 'Neuste Duden Wörterbuch-Suchergebnisse', snippet: 'Suchtreffer für NEUSTE', url: 'https://www.duden.de/suchen/dudenonline/neuste' }, t, a, st), 0);
+    assert.strictEqual(srv.scoreResult({ title: 'AMD Radeon RX 7700 XT', snippet: 'Grafikkarte', url: 'https://www.amd.com/' }, t, a, st), 0);
+    assert.ok(srv.scoreResult({ title: 'NVIDIA GeForce RTX 5090', snippet: 'Die neue Grafikkarte', url: 'https://www.nvidia.com/de-de/geforce/' }, t, a, st) >= 0.75);
+  });
+
   console.log('\nDateizugriff');
   const desk = await srv.desktopDir();
   fs.mkdirSync(desk, { recursive: true });
   const rel = `Desktop/od_selftest_${Date.now()}`;
-  await test('@skills/ zeigt in den Skill-Ordner', async () => {
-    const r = await srv.fsAction('stat', { path: '@skills/test.skill' });
-    assert.strictEqual(r.path, require('path').join(srv.SKILLS_DIR, 'test.skill'));
-  });
   await test('Ordner + Datei auf dem Desktop anlegen', async () => {
     await srv.fsAction('mkdir', { path: rel });
     const w = await srv.fsAction('write', { path: `${rel}/test.txt`, content: 'Hallo äöü ✓' });
@@ -122,6 +114,28 @@ async function test(name, fn) {
       assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), 'neu=--nach-update');
       assert.ok(!fs.existsSync(setupFile), 'Setup wurde nicht aufgeräumt');
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+  }
+
+  if (IS_WIN) {
+    console.log('\nOllama starten');
+    await test('Start über unsichtbare Konsole, nur einmal bei Doppelklick', async () => {
+      // Ersatz für ollama.exe: ein harmloses Windows-Programm
+      const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'od-ollama-'));
+      fs.mkdirSync(path.join(fake, 'Programs', 'Ollama'), { recursive: true });
+      fs.copyFileSync(path.join(process.env.SystemRoot, 'System32', 'whoami.exe'), path.join(fake, 'Programs', 'Ollama', 'ollama.exe'));
+      const old = process.env.LOCALAPPDATA;
+      process.env.LOCALAPPDATA = fake;
+      try {
+        const a = srv.startOllama();
+        const b = srv.startOllama();
+        assert.strictEqual(a, b, 'zweiter Klick startet erneut');
+        const r = await a;
+        // Das Ersatzprogramm antwortet natürlich nicht – aber der Start selbst muss geklappt haben
+        assert.ok(!/ließ sich nicht starten/.test(r.error || ''), r.error);
+      } finally {
+        process.env.LOCALAPPDATA = old;
+      }
     });
   }
 

@@ -64,144 +64,129 @@ export function needsApproval(name, autoApprove) {
   return true;
 }
 
-export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], skills = [], codeBlocks = [], knowledge = null }) {
+// Was will der Nutzer? Danach richtet sich, wie viel Anleitung die KI bekommt.
+// Kleine Modelle werden mit langen Prompts deutlich schlechter – bei "Hallo, wie geht's?" bekommen sie deshalb fast nichts.
+const COMPUTER_INTENT = /(ordner|datei|dateien|desktop|schreibtisch|terminal|\bcmd\b|konsole|eingabeaufforderung|befehl|powershell|batch|\.bat\b|öffne|öffnen|starte\b|starten|installier|deinstallier|lösch|erstell|anleg|speicher|programmier|skript|script|projekt|ausführ|führ\S* (das |es |den |die )?\S* ?aus|auf meinem (pc|computer|rechner|laptop)|mein(em|en)? (pc|computer|rechner|laptop|system)|festplatte|speicherplatz|arbeitsspeicher|ip-?adresse|meine ip\b|ipconfig|ping\b|prozess|taskmanager|meine grafikkarte|welche grafikkarte (hab|habe)|systeminfo|ollama|modell(e)? (laden|herunterladen|löschen|entladen|starten|stoppen)|lade \S+ herunter|\b(pull|herunterladen)\b|\.(txt|html?|css|js|py|json|md|csv|bat|cmd|ps1)\b|code (für|in|schreiben)|schreib\S* (mir )?(ein|einen|eine) (code|programm|spiel|webseite|website|app))/i;
+export function needsComputer(text) {
+  return COMPUTER_INTENT.test(String(text || ''));
+}
+const REMEMBER_HINT = /\b(merk|merke|merken|vergiss|ich heiße|ich heisse|mein name|ich bin \d|ich wohne|ich mag|ich liebe|lieblings)/i;
+const SMALLTALK = /^(hallo|hi|hey|moin|servus|grüß dich|guten (morgen|tag|abend)|na\b|wie geht'?s|wie geht es|was geht|danke|vielen dank|dankeschön|gute nacht|tschüss|bis später)/i;
+const RECALL_HINT = /(weißt du noch|weisst du noch|erinner|letztes mal|letzte mal|vorhin|vorher|gestern|früher|anderen chat|haben wir|hatten wir|hab ich (dir )?(gesagt|erzählt|geschrieben|gefragt)|habe ich (dir )?(gesagt|erzählt|geschrieben|gefragt)|was hab(e)? ich|meine (erste|letzte|vorige|vorherige|alte|frühere)n? (nachricht|frage)|meine nachrichten|was ich (gesagt|geschrieben|gefragt)|du hast (gesagt|geschrieben)|was hast du (gesagt|geschrieben)|weiter oben|wie (oben|gesagt)|was weißt du über mich|wiederhol)/i;
+
+const WIN_CMD = `### Windows-CMD richtig benutzen
+Das Terminal ist die Windows-Eingabeaufforderung (cmd.exe) – KEIN Linux, KEINE PowerShell.
+- Pfade mit Backslash \\ und mit Leerzeichen immer in "Anführungszeichen". Laufwerk wechseln: cd /d "D:\\Ordner".
+- Mehrere Befehle: mit && verbinden oder je Zeile einer.
+- Variablen: %USERPROFILE%, %USERNAME%, %CD% (nicht ~ oder $HOME).
+- KEINE Linux-Befehle: statt ls → dir, cat → type, rm → del, rm -r → rmdir /s /q, cp → copy, mv → move, touch → type nul > datei, grep → findstr, clear → cls, pwd → cd, which → where, sudo gibt es nicht.
+- Nützliche Befehle:
+  - dir /b "Ordner" (Inhalt), tree "Ordner" /f (alles), type "datei.txt" (anzeigen)
+  - copy "a.txt" "b.txt", move "a.txt" "Ordner\\", ren "alt.txt" "neu.txt", del "datei.txt"
+  - ipconfig (IP-Adresse), ping -n 4 google.com, systeminfo, ver, whoami, hostname
+  - tasklist (Programme), taskkill /im notepad.exe /f (beenden)
+  - Grafikkarte: powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion"
+  - Speicherplatz: powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem"
+  - Programm öffnen: start notepad, start "" "C:\\Pfad\\Datei.pdf", Webseite: start https://beispiel.de
+  - Code ausführen: python "datei.py", node "datei.js", Pakete: pip install NAME, winget install NAME
+- wmic ist veraltet – nimm die PowerShell-Zeilen oben.
+- Schlägt ein Befehl fehl, lies die Fehlermeldung und schreibe einen ANDEREN, korrigierten Befehl. Wiederhole nie denselben Befehl.`;
+
+export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, model, memory = [], recentChats = [], codeBlocks = [], knowledge = null, intent = {}, learned = [], userMessages = [] }) {
   // Nur das Datum (ohne Uhrzeit): So bleibt der Prompt gleich und Ollama muss ihn nicht jedes Mal neu einlesen
   const now = new Date().toLocaleDateString('de-DE', { dateStyle: 'full' });
   const win = sys?.platform === 'win32';
   const os = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[sys?.platform] || 'unbekannt';
   const desk = sys?.desktop || (win ? 'C:\\Users\\<Name>\\Desktop' : '~/Desktop');
+  const computer = agent && intent.computer;
   const parts = [];
   if (assistant?.systemPrompt?.trim()) parts.push(assistant.systemPrompt.trim());
   else parts.push(`Du bist ${assistant?.name || 'ein KI-Assistent'}, ein hilfreicher, kluger KI-Assistent.`);
-  parts.push(`Du läufst komplett lokal auf dem Computer des Nutzers${model ? ` (KI-Modell: ${model})` : ''}. Datum: ${now}. Antworte immer vollständig in der Sprache des Nutzers (meist Deutsch) – niemals chinesische oder andere fremde Schriftzeichen. Klar, freundlich und gut formuliert. Nutze Markdown für Struktur und Codeblöcke für Code.`);
+  parts.push(`Du läufst lokal auf dem Computer des Nutzers${model ? ` (Modell: ${model})` : ''}. Heute ist ${now}.
 
-  if (memory.length) parts.push(`## Was du über den Nutzer weißt\n${memory.map((f) => `- ${f}`).join('\n')}`);
-  if (knowledge?.titles?.length) {
-    parts.push(`## Dein gespeichertes Wissen (vom Nutzer zum Merken gegeben)
-Themen: ${knowledge.titles.join(' · ')}
-${knowledge.passages.length ? `Passende Auszüge zur aktuellen Frage – nutze sie bevorzugt, sie sind genauer als dein allgemeines Wissen:\n\n${knowledge.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}` : 'Passt eine Frage zu einem dieser Themen, sieh mit einem erinnern-Block nach.'}`);
+So antwortest du:
+- Beantworte genau die Frage, die gestellt wurde – direkt, verständlich, ohne Umschweife. Bleib beim Thema.
+- Smalltalk wie „Hallo, wie geht es dir?“ beantwortest du kurz, natürlich und freundlich (1–2 Sätze) und fragst, wobei du helfen kannst.
+- Bei Wissensfragen: zuerst die Antwort, dann nur so viel Erklärung wie nötig.
+- Erfinde nichts. Weißt du etwas nicht sicher (z. B. Neuigkeiten nach deinem Wissensstand), sag das ehrlich.
+- Antworte immer in der Sprache des Nutzers (meist Deutsch) – nie mit chinesischen oder anderen fremden Schriftzeichen.
+- Markdown nur, wo es hilft (Listen, Code in Codeblöcken).`);
+
+  if (memory.length) parts.push(`## Was du über den Nutzer weißt (nur nutzen, wenn es passt)\n${memory.map((f) => `- ${f}`).join('\n')}`);
+  if (knowledge?.passages?.length) {
+    parts.push(`## Gespeichertes Wissen zur Frage (vom Nutzer gemerkt – genauer als dein allgemeines Wissen)\n\n${knowledge.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}`);
   }
-  if (recentChats.length) parts.push(`## Frühere Chats mit dem Nutzer\n${recentChats.join('\n')}\nWenn der Nutzer sich auf frühere Gespräche bezieht, sieh dort nach – mit einem Block:\n\`\`\`erinnern\nSuchbegriff\n\`\`\`\nDanach aufhören, du bekommst die passenden Stellen.`);
-  parts.push('Wichtige Infos über den Nutzer (Name, Vorlieben, Projekte) kannst du dir dauerhaft merken:\n```merken\nDer Nutzer heißt Alex.\n```');
+  if (intent.recall && recentChats.length) parts.push(`## Frühere Chats mit dem Nutzer\n${recentChats.join('\n')}\nBrauchst du Details daraus, schreibe:\n\`\`\`erinnern\nSuchbegriff\n\`\`\`\nund hör dann auf – du bekommst die passenden Stellen.`);
+  if (intent.recall && userMessages.length) {
+    parts.push(`## Alle bisherigen Nachrichten des Nutzers in DIESEM Chat (älteste zuerst)\n${userMessages.map((t, i) => `${i + 1}. ${t}`).join('\n')}\nFragt der Nutzer nach etwas, das er vorher geschrieben hat, antworte genau daraus.`);
+  }
+  if (intent.remember) parts.push('Erzählt der Nutzer etwas Wichtiges über sich, merke es dir dauerhaft:\n```merken\nDer Nutzer heißt Alex.\n```');
 
-  if (agent) {
+  if (computer) {
     parts.push(`## Handeln auf dem Computer
-Betriebssystem: ${os}. Desktop-Ordner: ${desk}. Home-Ordner: ${sys?.home || '~'}.
-Du kannst direkt auf dem Computer handeln. Der Nutzer bestätigt jede Aktion per Klick – erkläre also nicht nur, sondern erledige Aufgaben selbst. Dafür schreibst du spezielle Codeblöcke, die die App ausführt${nativeTools ? ' (oder du nutzt deine Werkzeuge/Funktionen)' : ''}:
+Betriebssystem: ${os}. Desktop: ${desk}. Der Nutzer bestätigt jede Aktion per Klick. Erledige Aufgaben selbst mit diesen Blöcken${nativeTools ? ' (oder deinen Werkzeugen)' : ''}:
 
-1. Ordner anlegen (immer so, nie per Terminal):
+Ordner anlegen:
 \`\`\`ordner
 Desktop/mein-projekt
 \`\`\`
-
-2. Datei speichern (immer so, nie per echo; vollständiger Inhalt, ein Block pro Datei):
+Datei speichern (vollständiger Inhalt, ein Block pro Datei):
 \`\`\`datei:Desktop/mein-projekt/index.html
 <!DOCTYPE html>
 ...
 \`\`\`
-
-3. Befehl im sichtbaren Terminal ausführen – der Nutzer sieht ein echtes ${win ? 'CMD-' : ''}Terminal-Fenster, in das du tippst:
+Befehl im sichtbaren Terminal (startet im Desktop-Ordner):
 \`\`\`befehl
-${win ? 'systeminfo' : 'uname -a'}
+${win ? 'ipconfig' : 'ip addr'}
 \`\`\`
-${win ? `Es ist die Windows-Eingabeaufforderung (cmd), KEIN Linux: Pfade mit Backslash \\ und in Anführungszeichen, z. B. dir "${desk}". Das Terminal startet im Desktop-Ordner. Programme/Ordner/Webseiten sichtbar öffnen: start notepad, start "" "${desk}", start https://beispiel.de` : `Das Terminal startet im Desktop-Ordner. Ordner/Programme öffnen: ${os === 'macOS' ? 'open' : 'xdg-open'} PFAD`}
-
-4. Vorhandene Datei lesen bzw. Ordnerinhalt ansehen (danach aufhören, du bekommst den Inhalt):
+Datei lesen / Ordner ansehen:
 \`\`\`lesen
 Desktop/projekt/index.html
 \`\`\`
 \`\`\`liste
 Desktop/projekt
 \`\`\`
-Um eine vorhandene Datei zu ändern: erst lesen, dann die KOMPLETTE neue Fassung mit einem datei:-Block speichern (überschreibt die Datei – der Nutzer bestätigt das).
-${sys?.skillsDir ? `Dein Skill-Ordner (Anleitungen für dich als .skill-Dateien) ist erreichbar als @skills/ – z. B. \`\`\`datei:@skills/email.skill\n` : ''}${sys?.skillsDir ? '```' : ''}
-
-5. Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):
+Ollama steuern (pull NAME, rm NAME, load NAME, unload NAME, list, ps, start, stop):
 \`\`\`ollama
 pull llama3.2
 \`\`\`
-${webSearch ? `
-6. Im Internet suchen, wenn du etwas nicht sicher weißt oder es um Aktuelles geht:
-\`\`\`suche
-Suchbegriff
-\`\`\`
-` : ''}
-WICHTIG:
-- Du HAST bereits ein eigenes, sichtbares Terminal-Fenster. Öffne KEIN weiteres (kein "start cmd"). Schreibe einfach die Befehle in einen befehl-Block.
-- Nach einem befehl-, ollama-, erinnern- oder suche-Block hörst du SOFORT auf zu schreiben. Die App führt ihn aus und gibt dir das echte Ergebnis. Erfinde NIEMALS Ausgaben oder Ergebnisse.
-- Ordner und Dateien IMMER mit ordner- und datei:-Blöcken anlegen – das funktioniert zuverlässig, Terminal-Befehle dafür nicht.
-- Relative Pfade wie Desktop/projekt beziehen sich auf den Desktop des Nutzers.
-- Nutze die Blöcke nur, wenn etwas auf dem Computer passieren soll. Normale Fragen beantwortest du einfach.
 
-Beispiel – Nutzer: „Erstelle auf dem Desktop einen Ordner Test mit einer Datei hallo.txt, in der Hallo steht, und öffne ihn.“
-Deine Antwort:
-Klar, mache ich!
-\`\`\`ordner
-Desktop/Test
-\`\`\`
-\`\`\`datei:Desktop/Test/hallo.txt
-Hallo
-\`\`\`
-\`\`\`befehl
-${win ? 'start "" "Test"' : 'xdg-open Test'}
-\`\`\`
-
-Beispiel – Nutzer: „Wie ist meine IP-Adresse?“
-Deine Antwort:
-Ich schaue nach.
-\`\`\`befehl
-${win ? 'ipconfig' : 'ip addr'}
-\`\`\`
-
-Wenn der Nutzer „programmiere mir X“ sagt: lege einen Projektordner auf dem Desktop an, speichere alle Dateien vollständig mit datei:-Blöcken und öffne das Ergebnis danach mit einem befehl-Block.`);
-  } else if (webSearch) {
-    parts.push('Wenn du etwas nicht sicher weißt oder es um aktuelle Dinge geht, suche im Internet – mit dem Werkzeug web_search oder mit einem Block:\n```suche\nSuchbegriff\n```\nDanach sofort aufhören, du bekommst die echten Ergebnisse. Erfinde nichts.');
-  }
-  if (webSearch) {
-    parts.push(`## Websuche
-- Suche mit kurzen, genauen Suchbegriffen. Nenne den Namen des Produkts/der Sache (z. B. "Ollama neue Funktionen Release" statt einer langen Frage). Englische Begriffe finden bei Technik-Themen oft mehr.
-- Du bekommst echte Textstellen von den gefundenen Webseiten. Lies sie genau und beantworte die Frage daraus – mit konkreten Details (Namen, Zahlen, Versionen, Daten).
-- Sag NICHT, du hättest nichts gefunden, wenn die Textstellen passende Infos enthalten.
-- Passen die Ergebnisse nicht zur Frage, suche EINMAL erneut mit besseren Begriffen (z. B. mit dem Namen der offiziellen Webseite).
-- Formuliere eine eigene, gut verständliche Antwort (nicht abschreiben) und nenne am Ende kurz die Quellen als Links.`);
-  }
-  if (agent && codeBlocks.length) {
-    const list = codeBlocks.slice(-6).map((b) => `- @code ${b.n}: ${b.path || b.lang || 'Code'} (${b.code.split('\n').length} Zeilen) – beginnt mit: ${b.code.trim().split('\n')[0].slice(0, 60)}`);
-    parts.push(`## Code, der schon im Chat steht
+Regeln:
+- Nach einem befehl-, lesen-, liste- oder ollama-Block SOFORT aufhören. Du bekommst das echte Ergebnis. Erfinde nie Ausgaben.
+- Ordner und Dateien immer mit ordner-/datei:-Blöcken anlegen, nicht per Terminal.
+- Es gibt schon ein sichtbares Terminal-Fenster – öffne kein weiteres (kein "start cmd").
+- Vorhandene Datei ändern: erst lesen, dann die komplette neue Fassung mit datei: speichern.
+- „Programmiere mir X“: Projektordner auf dem Desktop, alle Dateien vollständig speichern, danach öffnen.${webSearch ? `
+- Weißt du einen Befehl nicht GANZ sicher, suche ihn zuerst im Internet (z. B. \`\`\`suche\n${win ? 'Windows CMD' : 'Terminal'} Befehl Speicherplatz anzeigen\n\`\`\`) statt zu raten. Erfundene Befehle gibt es nicht.` : ''}`);
+    if (learned.length) {
+      parts.push(`## Befehle, die auf diesem Computer schon funktioniert haben (selbst gelernt)\n${learned.map((l) => `- ${l.task}: ${l.command}`).join('\n')}\nPasst einer zur Aufgabe, nimm ihn.`);
+    }
+    parts.push(win ? WIN_CMD : `### Terminal\nEs ist ${os === 'macOS' ? 'macOS (zsh)' : 'Linux (bash)'}. Öffnen mit ${os === 'macOS' ? 'open' : 'xdg-open'} PFAD. Schlägt ein Befehl fehl, schreibe einen ANDEREN, korrigierten Befehl.`);
+    if (codeBlocks.length) {
+      const list = codeBlocks.slice(-6).map((b) => `- @code ${b.n}: ${b.path || b.lang || 'Code'} (${b.code.split('\n').length} Zeilen) – beginnt mit: ${b.code.trim().split('\n')[0].slice(0, 60)}`);
+      parts.push(`## Code, der schon im Chat steht
 ${list.join('\n')}
-Soll so ein Code gespeichert werden, schreibe ihn NICHT noch einmal ab – das kostet nur Zeit. Schreibe stattdessen nur den Verweis in den datei:-Block, die App setzt den kompletten Code ein:
+Soll so ein Code unverändert gespeichert werden, schreibe ihn NICHT neu ab, sondern nur den Verweis:
 \`\`\`datei:Desktop/projekt/index.html
 @code ${codeBlocks[codeBlocks.length - 1].n}
 \`\`\`
-Nur wenn der Code geändert werden soll, schreibst du die neue, vollständige Fassung.`);
+Nur wenn er geändert werden soll, schreibst du die neue, vollständige Fassung.`);
+    }
   }
-  if (skills.length) {
-    parts.push(`## Anleitungen (Skills) – befolge sie genau\n\n${skills.map((sk) => `### ${sk.name}\n${sk.content}`).join('\n\n')}`);
+  if (webSearch && intent.web) {
+    parts.push(`## Websuche
+Du bekommst echte Textstellen aus dem Internet. So nutzt du sie:
+- Beantworte die Frage NUR mit Infos aus Textstellen, die wirklich zur Frage passen. Unpassende Treffer ignorierst du komplett und nennst sie auch nicht als Quelle.
+- Nenne konkrete Details (Namen, Modelle, Zahlen, Daten) genau so, wie sie in den Textstellen stehen.
+- Passt kein Treffer, sag das ehrlich und suche einmal neu mit besseren, kurzen Begriffen:
+\`\`\`suche
+kurzer genauer Suchbegriff
+\`\`\`
+- Am Ende kurz die passenden Quellen als Links.`);
+  } else if (webSearch) {
+    parts.push('Geht es um Aktuelles, das du nicht sicher weißt, kannst du im Internet suchen:\n```suche\nkurzer Suchbegriff\n```\nDanach aufhören, du bekommst die Ergebnisse.');
   }
   return parts.join('\n\n');
-}
-
-// Passende Skills zur Nachricht auswählen: immer-aktive + bis zu 2 per Auslöser-Wort
-export function selectSkills(all, text, disabled = []) {
-  const low = ` ${String(text || '').toLowerCase()}`;
-  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const hit = (t) => (/\s/.test(t) ? low.includes(t) : new RegExp(`(^|[^\\p{L}\\p{N}])${esc(t)}`, 'u').test(low));
-  const active = all.filter((s) => !disabled.includes(s.id));
-  const picked = active
-    .filter((s) => !s.always)
-    .map((s) => ({ s, score: s.triggers.filter(hit).length * (s.priority || 1) }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 2)
-    .map((x) => x.s);
-  const out = [];
-  let budget = 7000; // Platz im Kontext kleiner Modelle schonen
-  for (const s of [...active.filter((x) => x.always), ...picked]) {
-    if (s.content.length > budget) continue;
-    budget -= s.content.length;
-    out.push(s);
-  }
-  return out;
 }
 
 // ---------- Code wiederverwenden statt neu schreiben ----------
@@ -298,11 +283,15 @@ export function needsWeb(text) {
     && !/(programmier|schreib\S* (mir )?(ein|einen|eine) (code|skript|programm)|erstell\S* (einen|eine) (ordner|datei))/i.test(t);
 }
 
-// Suchbegriff aus einer Frage machen (Füllwörter raus)
-export function makeQuery(text) {
-  const stop = /^(kannst|könntest|du|mir|mich|bitte|mal|doch|einfach|was|ist|sind|das|die|der|den|dem|des|ein|eine|einen|und|oder|wie|wo|wer|wann|welche|welcher|welches|zeig|zeige|sag|sage|such|suche|finde|im|in|auf|internet|web|nach|für|über|mit|zu|zum|zur|es|gibt|heißt|aktuell|gerade|ich|will|möchte|wissen|weißt|hey|hallo|okay|ok|also|link|links)$/i;
-  const words = String(text || '').replace(/[?!.,;:„“"()]/g, ' ').split(/\s+/).filter((w) => w && !stop.test(w));
-  return (words.length ? words : String(text).split(/\s+/)).slice(0, 10).join(' ');
+// Suchbegriff aus einer Frage machen (Füllwörter und Bitten wie "recherchiere im Internet" raus)
+const QUERY_STOP = /^(kannst|könntest|kann|du|dir|mir|mich|bitte|mal|doch|einfach|was|ist|sind|war|das|die|der|den|dem|des|ein|eine|einen|einem|und|oder|wie|wo|wer|wann|welche|welcher|welches|zeig|zeige|sag|sage|erklär|erkläre|im|in|auf|internet|web|netz|online|google|nach|für|über|mit|zu|zum|zur|es|gibt|heißt|gerade|ich|will|möchte|wissen|weißt|hey|hallo|okay|ok|also|link|links|danke|aktuell|momentan|derzeit|denn|eigentlich|überhaupt|noch|schon|da|von|vom)$/i;
+const QUERY_VERB = /^(recherch|such|guck|schau|find|nachseh|nachschau|herausfind|informier|check)/i;
+export function makeQuery(text, now = new Date()) {
+  const words = String(text || '').replace(/[?!.,;:„“"()]/g, ' ').split(/\s+/).filter((w) => w && !QUERY_STOP.test(w) && !QUERY_VERB.test(w));
+  let q = (words.length ? words : String(text).split(/\s+/)).slice(0, 10).join(' ');
+  // "neueste/aktuell" ohne Jahreszahl -> aktuelles Jahr dazu, damit keine alten Seiten kommen
+  if (/\b(neu\p{L}*ste?[nrs]?|neute[nrs]?|aktuell\p{L}*|latest|newest)\b/iu.test(text) && !/\b20\d{2}\b/.test(q) && !/(video|youtube|kanal|channel|upload|folge|tiktok|instagram)/i.test(text)) q += ` ${now.getFullYear()}`;
+  return q;
 }
 
 // Nachfrage zu einer vorherigen Suche ("und das allerneueste vom Upload?") – enthält kein eigenes Thema.
@@ -364,36 +353,6 @@ export function intentHints(text, { newTopic = false } = {}) {
   return hints.length ? `\n\n(${hints.join(' ')})` : '';
 }
 
-// ---------- Skill-Auswahl durch die KI ----------
-// Die KI bekommt die Liste aller Skills (Titel + Beschreibung) und wählt selbst, welche helfen.
-export function skillRouterMessages(skills, text, prev = '') {
-  const list = skills.map((sk, i) => `${i + 1}. ${sk.name} – ${sk.description || sk.triggers.slice(0, 6).join(', ')}`).join('\n');
-  return [
-    { role: 'system', content: 'Du wählst passende Anleitungen (Skills) für einen KI-Assistenten aus. Antworte NUR mit den Nummern der Skills, die bei der Nachricht des Nutzers wirklich helfen – höchstens 3, durch Komma getrennt. Hilft keiner, antworte mit 0. Keine Erklärung, keine anderen Wörter.' },
-    { role: 'user', content: `Skills im Skill-Ordner:\n${list}\n\n${prev ? `Vorherige Nachricht (zum Zusammenhang): „${String(prev).slice(0, 300)}“\n` : ''}Nachricht des Nutzers: „${String(text).slice(0, 1200)}“\n\nNummern:` },
-  ];
-}
-
-export function parseSkillPick(answer, count) {
-  const clean = String(answer || '').replace(/<think>[\s\S]*?(<\/think>|$)/g, ' ');
-  const nums = [...clean.matchAll(/\d+/g)].map((m) => Number(m[0])).filter((n) => n >= 1 && n <= count);
-  if (!nums.length && !/\b0\b|kein|none/i.test(clean)) return null; // nicht verstanden -> Ersatz nutzen
-  return [...new Set(nums)].slice(0, 3);
-}
-
-// Gewählte Skills + immer aktive, mit Platzbudget für kleine Modelle
-export function skillsByIds(all, ids, disabled = []) {
-  const active = all.filter((s) => !disabled.includes(s.id));
-  const out = [];
-  let budget = 8000;
-  for (const s of [...active.filter((x) => x.always), ...ids.map((id) => active.find((x) => x.id === id)).filter((x) => x && !x.always)]) {
-    if (s.content.length > budget) continue;
-    budget -= s.content.length;
-    out.push(s);
-  }
-  return out;
-}
-
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
   return /(führ|ausführ|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));
@@ -420,8 +379,11 @@ export function findStopBlock(content, { agent, webSearch, intent }) {
   return -1;
 }
 
+// Kleine Modelle schreiben manchmal das Wort aus der Anleitung statt eines echten Befehls ("@befehl", "BEFEHL", "dein Befehl")
+const PLACEHOLDER_CMD = /^(@?\s*(be+fe+hl\w*|befehle?|command|cmd-befehl|@code\s*\d*|code)|(dein|der|ein|hier (der|dein)) befehl.*|\.\.\.|…|<[^>]+>|\[[^\]]+\])$/i;
 function shellCommand(kind, body) {
-  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l));
+  const lines = body.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l))
+    .map((l) => l.split(/\s*&&\s*/).filter((part) => !PLACEHOLDER_CMD.test(part.trim())).join(' && ')).filter(Boolean);
   if (!lines.length) return '';
   if (['powershell', 'ps1', 'pwsh'].includes(kind)) {
     return `powershell -NoProfile -Command "${lines.join('; ').replace(/"/g, '\\"')}"`;
@@ -474,9 +436,37 @@ export function parseTextActions(content, { agent, webSearch, intent = false, co
   return actions;
 }
 
+// Gespeicherte Suchergebnisse: Fällt das Internet aus, kann die KI trotzdem auf Gelerntes zurückgreifen
+const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } };
+const cacheTerms = (q) => String(q).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !/^20\d{2}$/.test(w));
+export const webCache = {
+  KEY: 'od.webcache',
+  save(r) {
+    if (!r?.results?.length) return;
+    const entry = { query: r.query, engine: r.engine, channel: r.channel || null, savedAt: Date.now(),
+      results: r.results.slice(0, 6).map((x) => ({ ...x, content: String(x.content || '').slice(0, 1500) })) };
+    let list = lsGet(this.KEY, []).filter((e) => e.query.toLowerCase() !== r.query.toLowerCase());
+    list.unshift(entry);
+    list = list.slice(0, 40);
+    while (list.length && !lsSet(this.KEY, list)) list.pop(); // Speicher voll -> älteste weg
+  },
+  find(query) {
+    const terms = cacheTerms(query);
+    if (!terms.length) return null;
+    let best = null;
+    for (const e of lsGet(this.KEY, [])) {
+      const et = cacheTerms(e.query);
+      const hit = terms.filter((t) => et.some((x) => x === t || (x.length > 4 && t.length > 4 && x.slice(0, 5) === t.slice(0, 5)))).length / terms.length;
+      if (hit >= 0.6 && (!best || hit > best.hit)) best = { hit, e };
+    }
+    return best?.e || null;
+  },
+};
+
 // Führt ein Werkzeug aus. ui.progress(text, pct) zeigt Fortschritt, signal bricht ab.
 // Rückgabe: { output: Text für die KI, display: Text für den Nutzer, sources? }
-export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {}, visibleTerminal = true, memory, question = '' } = {}) {
+export async function executeTool(name, args = {}, { progress = () => {}, signal, searchEngine = 'google', searchKeys = {}, visibleTerminal = true, memory, question = '', webSearch = true, sys = '' } = {}) {
   switch (name) {
     case 'search_chats': {
       const hits = memory?.search(String(args.query || '')) || [];
@@ -492,13 +482,23 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       return { output: `Gemerkt: ${fact}`, display: fact };
     }
     case 'web_search': {
-      const r = await web.search(String(args.query || ''), searchEngine, searchKeys);
+      let r;
+      let offline = false;
+      try {
+        r = await web.search(String(args.query || ''), searchEngine, searchKeys);
+        webCache.save(r);
+      } catch (err) {
+        // Kein Internet? Dann aus früheren Suchen antworten
+        r = webCache.find(String(args.query || ''));
+        if (!r) throw err;
+        offline = true;
+      }
       if (!r.results.length) return { output: 'Keine Treffer gefunden.', display: 'Keine Treffer.' };
       const output = r.results.map((x, i) =>
         `### Quelle ${i + 1}: ${x.title}\nURL: ${x.url}\n${x.content ? `Textstellen von der Seite:\n${x.content}` : `Kurzbeschreibung: ${x.snippet}`}`).join('\n\n');
       return {
-        output: `Websuche nach „${r.query}“ – echte Inhalte von ${r.results.length} Quellen:\n\n${r.channel ? `Gefundener YouTube-Kanal: ${r.channel.name} (https://www.youtube.com${r.channel.url}). Die ersten Videos unten sind seine NEUESTEN Uploads.\n\n` : ''}${output}\n\nBeantworte jetzt die Frage des Nutzers aus diesen Inhalten (mit konkreten Details) und nenne die Quellen als Links. Bei Videos: Titel, Kanal, Datum und Link nennen – die App zeigt automatisch eine Vorschau.`,
-        display: `${r.results.length} Treffer (${r.engine})`,
+        output: `${offline ? `(Keine Internetverbindung – das sind gespeicherte Ergebnisse einer früheren Suche vom ${new Date(r.savedAt).toLocaleDateString('de-DE')}. Sag dem Nutzer, dass sie veraltet sein können.)\n\n` : ''}Websuche nach „${r.query}“ – echte Inhalte von ${r.results.length} Quellen:\n\n${r.channel ? `Gefundener YouTube-Kanal: ${r.channel.name} (https://www.youtube.com${r.channel.url}). Die ersten Videos unten sind seine NEUESTEN Uploads.\n\n` : ''}${output}\n\nBeantworte jetzt die Frage des Nutzers aus diesen Inhalten (mit konkreten Details) und nenne die Quellen als Links. Bei Videos: Titel, Kanal, Datum und Link nennen – die App zeigt automatisch eine Vorschau.`,
+        display: offline ? `${r.results.length} Treffer aus dem Speicher (offline)` : `${r.results.length} Treffer (${r.engine})`,
         sources: r.results.slice(0, 8).map((x) => ({ title: x.title, url: x.url, type: x.type || 'page', image: x.image || '', site: x.site || '', description: x.description || x.snippet || '', channel: x.channel || '', published: x.published || '', views: x.views || '', videoId: x.videoId || '' })),
       };
     }
@@ -539,8 +539,15 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       }
       const text = [r.stdout, r.stderr].filter((x) => x && x.trim()).join('\n').trim() || '(keine Ausgabe)';
       const ran = r.command && r.command !== command ? `Ausgeführt als: ${r.command}\n` : '';
+      let help = '';
+      if (r.code !== 0 && !r.running) {
+        const unknown = /(nicht als interner oder externer befehl|is not recognized as an internal or external command|command not found|wird nicht erkannt|befehl nicht gefunden)/i.test(text);
+        const goal = makeQuery(question).replace(/\b20\d{2}\b/, '').trim();
+        help = `\n\nDer Befehl hat NICHT funktioniert.${unknown ? ' Diesen Befehl gibt es so nicht.' : ''} Rate nicht weiter und wiederhole ihn nicht.`
+          + (webSearch ? ` Suche im Internet nach dem richtigen Befehl:\n\`\`\`suche\n${sys === 'win32' ? 'Windows CMD' : 'Terminal'} Befehl ${goal || command.split(' ')[0]}\n\`\`\`\noder schreibe einen anderen, korrigierten Befehl.` : ' Schreibe einen anderen, korrigierten Befehl.');
+      }
       return {
-        output: `${ran}Exit-Code ${r.code}${r.code === 0 ? ' (Erfolg)' : ' (Fehler)'}\n${text.slice(0, 12000)}`,
+        output: `${ran}Exit-Code ${r.code}${r.code === 0 ? ' (Erfolg)' : ' (Fehler)'}\n${text.slice(0, 12000)}${help}`,
         display: text, code: r.code, failed: r.code !== 0, visible: r.visible,
       };
     }
@@ -595,3 +602,62 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       throw new Error(`Unbekanntes Werkzeug: ${name}`);
   }
 }
+
+// Wie viel Anleitung braucht die KI für diese Nachricht?
+// recentComputer: Im aktuellen Thema wurde gerade am Computer gearbeitet (dann zählen Nachfragen wie "ja mach" mit)
+export function promptIntent(text, { recentComputer = false, web = false } = {}) {
+  const t = String(text || '');
+  // Reiner Smalltalk ("Hallo, wie geht's?") braucht keine Computer-Anleitung
+  const smalltalk = t.length < 80 && SMALLTALK.test(t.trim()) && !needsComputer(t);
+  return {
+    computer: !smalltalk && (needsComputer(t) || recentComputer),
+    web,
+    remember: REMEMBER_HINT.test(t),
+    recall: RECALL_HINT.test(t),
+  };
+}
+
+// ---------- Schutz vor Endlosschleifen beim Schreiben ----------
+// Kleine Modelle geraten manchmal in eine Schleife und schreiben immer wieder dasselbe
+// (z. B. zig gleiche Codeblöcke). Gibt die Stelle zurück, ab der abgeschnitten wird, sonst -1.
+export function findRepetition(text) {
+  const t = String(text || '');
+  if (t.length < 80) return -1;
+  // 1) Gleiche Codeblöcke: derselbe Block 3×, oder die letzten 6 Blöcke bestehen aus höchstens 2 verschiedenen
+  const blocks = [...t.matchAll(/```[ \t]*([^\n`]*)\n([\s\S]*?)```/g)].map((m) => ({ key: `${m[1].trim().toLowerCase()}|${m[2].trim()}`, index: m.index }));
+  const seen = new Map();
+  for (const b of blocks) {
+    const n = (seen.get(b.key) || 0) + 1;
+    seen.set(b.key, n);
+    if (n === 3) return b.index;
+  }
+  if (blocks.length >= 6 && new Set(blocks.slice(-6).map((b) => b.key)).size <= 2) return blocks[blocks.length - 5].index;
+  // 2) Gleiche Textzeile (außerhalb von Code) 5× oder öfter
+  const prose = t.replace(/```[\s\S]*?(```|$)/g, (m) => ' '.repeat(m.length));
+  const lines = new Map();
+  let pos = 0;
+  for (const line of prose.split('\n')) {
+    const k = line.trim();
+    if (k.length > 8) {
+      const e = lines.get(k) || { n: 0, third: -1 };
+      e.n++;
+      if (e.n === 3) e.third = pos;
+      if (e.n >= 5) return e.third;
+      lines.set(k, e);
+    }
+    pos += line.length + 1;
+  }
+  // 3) Das Ende des Textes kam schon mehrmals vor (Schleife ohne Zeilenumbrüche)
+  if (t.length > 800) {
+    const tail = t.slice(-160);
+    let count = 0;
+    let i = -1;
+    let second = -1;
+    while ((i = t.indexOf(tail, i + 1)) !== -1) { count++; if (count === 2) second = i; }
+    if (count >= 4) return second;
+  }
+  return -1;
+}
+
+// Gleicher Befehl, nur anders geschrieben?
+export const commandKey = (c) => String(c || '').toLowerCase().replace(/\s+/g, ' ').replace(/["']/g, '').trim();

@@ -5,8 +5,8 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
-import { local, localFs, web, skillsApi, updates } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, selectSkills, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints, skillRouterMessages, parseSkillPick, skillsByIds } from './agent.js';
+import { local, localFs, web, updates } from './local.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -69,8 +69,6 @@ const DEFAULT_SETTINGS = {
   lastModel: '',
   lastAssistantId: 'default',
   memory: [],
-  disabledSkills: [],
-  skillMode: 'ai',
   updateCheck: true,
   sidebarHidden: false,
   tts: { auto: false, voiceURI: '', rate: 1, pitch: 1 },
@@ -118,7 +116,6 @@ let settings = loadJson('od.settings', DEFAULT_SETTINGS);
 settings.tts = { ...DEFAULT_SETTINGS.tts, ...settings.tts };
 settings.searchKeys = { ...DEFAULT_SETTINGS.searchKeys, ...settings.searchKeys };
 if (!Array.isArray(settings.memory)) settings.memory = [];
-if (!Array.isArray(settings.disabledSkills)) settings.disabledSkills = [];
 let assistants = loadList('od.assistants', DEFAULT_ASSISTANTS);
 if (!assistants.length) assistants = structuredClone(DEFAULT_ASSISTANTS);
 
@@ -695,7 +692,7 @@ function messageHtml(m, i, chat, isLastAi) {
         <button class="icon-btn" data-action="edit" title="Bearbeiten">${icon('edit')}</button>
       </div></div></div>`;
   }
-  if (m.role === 'tool' && m.name === 'select_skills') return skillPickHtml(m, i, chat);
+  if (m.role === 'tool' && m.name === 'select_skills') return ''; // alte Chats: Skill-Zeile gibt es nicht mehr
   if (m.role === 'tool') return toolHtml(m);
 
   const streaming = busy?.msgId === m.id;
@@ -707,11 +704,9 @@ function messageHtml(m, i, chat, isLastAi) {
   if (!streaming && !text.trim() && !thinking && !m.error && m.tool_calls?.length) return '';
   const a = getAssistant(m.assistantId);
   const sources = collectSources(chat, i);
-  const pick = skillPickFor(chat, i);
   return `<div class="msg ai ${isLastAi ? 'last' : ''}" id="m-${m.id}" data-id="${m.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main">
-      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${m.skills?.length && !(pick && skillLine(pick, m)) ? `<span class="skill-tag" title="Genutzte Skills">${escapeHtml(m.skills.join(', '))}</span>` : ''}${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
-      ${pick ? skillLine(pick, m) : ''}
+      <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
       ${!streaming && m.content ? linkPreviewsHtml(m.content, sources) : ''}
@@ -722,40 +717,6 @@ function messageHtml(m, i, chat, isLastAi) {
         ${m.stats ? `<span class="msg-stats">${statsText(m.stats)}</span>` : ''}
       </div>`}
     </div></div>`;
-}
-
-// Skill-Auswahl erscheint direkt unter dem Namen der Antwort ("Skills gelesen: …")
-function skillLine(t, m) {
-  const running = t.status === 'running';
-  const names = t.args?.names?.length ? t.args.names : t.args?.fallback ? m?.skills || [] : [];
-  if (!running && !names.length) return ''; // kein Skill nötig -> nichts anzeigen
-  const label = running ? 'Sieht im Skill-Ordner nach …' : `Skills gelesen: ${escapeHtml(names.join(', '))}`;
-  return `<div class="msg-skills ${running ? 'running' : ''}">${icon(running ? 'loader' : 'file')}<span>${label}</span></div>`;
-}
-
-// Gehört zu dieser Antwort eine Skill-Auswahl? (nur bei der ersten Antwort nach der Nutzer-Nachricht)
-function skillPickFor(chat, i) {
-  let pick = null;
-  for (let k = i - 1; k >= 0; k--) {
-    const x = chat.messages[k];
-    if (x.role === 'user') return pick;
-    if (x.role === 'assistant' && (busy?.msgId === x.id || x.error || x.thinking || splitThink(x.content).text.trim() || !x.tool_calls?.length)) return null;
-    if (x.role === 'tool' && x.name === 'select_skills') pick = x;
-  }
-  return pick;
-}
-
-// Solange noch keine Antwort da ist: Platzhalter mit Name + Skill-Zeile, danach steht die Zeile in der Antwort
-function skillPickHtml(t, i, chat) {
-  for (let k = i + 1; k < chat.messages.length; k++) {
-    const x = chat.messages[k];
-    if (x.role === 'user') break;
-    if (x.role === 'assistant') return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}" style="display:none"></div>`;
-  }
-  if (!busy || busy.chatId !== chat.id) return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}">${skillLine(t)}</div>`;
-  const a = getAssistant(chat.assistantId);
-  return `<div class="msg ai pending-ai" id="m-${t.id}" data-id="${t.id}">${avatarHtml(a, 'msg-avatar')}
-    <div class="msg-main"><div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(chat.model || '')}</span></div>${skillLine(t)}</div></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -958,21 +919,40 @@ function withFilesCard(text, streaming, m) {
 
 function bodyHtml(text, streaming, m) {
   if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
-  if (streaming && !text.trim()) return thinkIndicator(m.thinking ? 'Denkt nach' : 'Überlegt');
+  if (streaming && !text.trim()) return thinkIndicator(thinkPhrase(m));
   let html = (m.role === 'assistant' && withFilesCard(text, streaming, m)) || renderMarkdown(text);
   if (m.reusedCode && !streaming) html += `<p class="reuse-note">${icon('copy')} Code ${m.reusedCode} aus dem Chat übernommen – nicht neu geschrieben</p>`;
   if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
   return streaming ? html.replace(/(<\/p>|<\/li>)(?![\s\S]*(<\/p>|<\/li>))/, '<span class="cursor"></span>$1') : html;
 }
 
+// Schimmer-Text; die Verzögerung hängt an der Uhrzeit, damit der Streifen beim Neuzeichnen nicht von vorne anfängt
+const SHIMMER_MS = 1800;
+const shimDelay = () => `animation-delay:-${Date.now() % SHIMMER_MS}ms`;
+const shim = (html) => `<span class="shimmer" style="${shimDelay()}">${html}</span>`;
+
+// Wechselnde Status-Texte, solange die KI überlegt – richtet sich nach der vergangenen Zeit
+const PHRASES = ['Liest deine Nachricht', 'Denkt nach', 'Sortiert die Gedanken', 'Verknüpft, was sie weiß', 'Prüft die Details', 'Formuliert die Antwort'];
+const PHRASES_THINK = ['Denkt nach', 'Wägt Möglichkeiten ab', 'Geht Schritt für Schritt vor', 'Prüft ihre Idee', 'Ordnet die Gedanken', 'Gleich fertig mit Nachdenken'];
+function thinkPhrase(m) {
+  const secs = (Date.now() - (m?.createdAt || Date.now())) / 1000;
+  if (secs > 45 && Math.floor(secs / 4) % 3 === 0) return 'Große Frage – das dauert etwas';
+  const list = m?.thinking ? PHRASES_THINK : PHRASES;
+  const i = Math.floor(secs / 3.5);
+  return `${i < list.length ? list[i] : list[1 + ((i - 1) % (list.length - 1))]} …`;
+}
+
 function thinkIndicator(label) {
-  const dots = Array.from({ length: 8 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
-  return `<div class="think-ind"><span class="ti-dots" aria-hidden="true">${dots}</span><span class="ti-label">${label}</span><span class="ti-meta" data-ti></span></div>`;
+  const bars = Array.from({ length: 18 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
+  return `<div class="think-ind" role="status"><span class="ti-orb" aria-hidden="true"><span class="o-glow"></span><span class="o-blob"></span>`
+    + '<span class="o-core"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span><i class="o-p1"></i><i class="o-p2"></i></span>'
+    + `<span class="ti-main"><span class="ti-top"><span class="ti-label" style="${shimDelay()}">${label}</span><span class="ti-meta" data-ti></span></span>`
+    + `<span class="ti-wave" aria-hidden="true">${bars}</span></span></div>`;
 }
 
 function thinkingHtml(thinking, active) {
   if (!thinking) return '';
-  return `<details class="thinking"${active ? ' open' : ''}><summary>${active ? '<span class="ti-label">Denkt nach</span>' : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
+  return `<details class="thinking"${active ? ' open' : ''}><summary>${active ? `<span class="ti-label" style="${shimDelay()}">Denkt nach …</span>` : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
 }
 
 function statsText(s) {
@@ -1043,19 +1023,14 @@ const STATUS_TEXT = { pending: 'Wartet auf Erlaubnis', running: 'Läuft …', do
 function toolHtml(t) {
   const meta = TOOL_META[t.name] || { icon: 'zap', label: () => t.name };
   // Websuche läuft dezent im Hintergrund – nur eine kleine Zeile
-  if (t.name === 'select_skills') {
-    const running = t.status === 'running';
-    const names = t.args?.names || [];
-    const label = running ? 'Sieht im Skill-Ordner nach …' : names.length ? `Skills gelesen: ${escapeHtml(names.join(', '))}` : t.args?.fallback ? 'Skills über Auslöse-Wörter gewählt' : 'Kein Skill nötig';
-    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : 'file')} ${label}</span></div>`;
-  }
+  if (t.name === 'select_skills') return '';
   if (t.name === 'remember_text') {
     return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research">${icon('save')} Dauerhaft gemerkt: ${escapeHtml((t.args?.titles || []).join(', '))} – in allen Chats verfügbar</span></div>`;
   }
   if (t.name === 'search_chats' || t.name === 'remember') {
     const running = t.status === 'running';
     const label = t.name === 'remember' ? `Gemerkt: ${escapeHtml(t.args?.fact || '')}` : `In früheren Chats nachgesehen${t.hits != null ? ` · ${t.hits} ${t.hits === 1 ? 'Stelle' : 'Stellen'}` : ''}`;
-    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : t.name === 'remember' ? 'save' : 'search')} ${running ? 'Erinnere mich …' : label}</span></div>`;
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : t.name === 'remember' ? 'save' : 'search')} ${running ? shim('Erinnere mich …') : label}</span></div>`;
   }
   // Gespeicherte Dateien: nur eine kleine Zeile (die Karte "Dateien bearbeitet" zeigt schon alles)
   if (t.name === 'write_file' && t.status === 'done') {
@@ -1067,7 +1042,7 @@ function toolHtml(t) {
     const running = t.status === 'running';
     const label = t.name === 'web_search' ? `Im Web recherchiert: „${escapeHtml(t.args?.query || '')}“` : `Webseite gelesen`;
     return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : 'globe')}
-      ${running ? 'Recherchiere im Web …' : t.status === 'error' ? 'Websuche nicht möglich' : label}</span></div>`;
+      ${running ? shim(`Recherchiere im Web${t.args?.query ? `: „${escapeHtml(t.args.query)}“` : ' …'}`) : t.status === 'error' ? 'Websuche nicht möglich' : label}</span></div>`;
   }
   let body = '';
   const a = t.args || {};
@@ -1091,7 +1066,7 @@ function toolHtml(t) {
   }
   const failed = t.status === 'done' && t.failedRun;
   return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><div class="tool-card ${t.status}" style="flex:1">
-    <div class="tool-head"><div class="t-icon">${icon(meta.icon)}</div><div class="t-label" title="${escapeHtml(meta.label(a))}">${escapeHtml(meta.label(a))}</div>
+    <div class="tool-head"><div class="t-icon">${icon(meta.icon)}</div><div class="t-label" title="${escapeHtml(meta.label(a))}">${t.status === 'running' ? shim(escapeHtml(meta.label(a))) : escapeHtml(meta.label(a))}</div>
     ${t.reused ? '<span class="badge accent" title="Vorhandener Code wurde übernommen statt neu geschrieben">übernommener Code</span>' : ''}<span class="tool-status ${failed ? 'error' : t.status}">${failed ? 'Mit Fehler beendet' : STATUS_TEXT[t.status] || t.status}</span></div>
     ${body ? `<div class="tool-body">${body}</div>` : ''}</div></div>`;
 }
@@ -1530,6 +1505,8 @@ function stop() {
   busy?.controller.abort();
 }
 
+const MAX_COMMANDS = 5;
+const INFO_ONLY_TOOLS = new Set(['web_search', 'fetch_webpage', 'search_chats', 'remember', 'remember_text', 'select_skills']);
 const INFO_TOOLS = new Set(['web_search', 'fetch_webpage', 'run_command', 'read_file', 'list_directory', 'list_models', 'running_models']);
 
 // Ab welcher Nachricht gehört der Chat zum aktuellen Thema?
@@ -1553,7 +1530,6 @@ async function generate(chat) {
   const isFirst = chat.messages.filter((m) => m.role === 'user').length === 1;
   // Merkt sich, was in dieser Antwort schon ausgeführt wurde (Schutz vor Endlosschleifen)
   const turn = { done: new Set() };
-  await refreshSkills(); // neue/geänderte .skill-Dateien sofort nutzen
   try {
     const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
     if (lastUser?.content && REMEMBER_INTENT.test(lastUser.content)) {
@@ -1565,22 +1541,10 @@ async function generate(chat) {
         persist(chat);
       }
     }
-    if (lastUser?.content && MEMORY_INTENT.test(lastUser.content) && chats.length > 1) {
+    if (lastUser?.content && MEMORY_INTENT.test(lastUser.content) && (chats.length > 1 || chat.messages.length > 3)) {
       const act = { name: 'search_chats', args: { query: lastUser.content } };
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
       await runAction(chat, act, controller.signal);
-    }
-    // Die KI schaut in den Skill-Ordner und wählt passende Anleitungen
-    if (settings.skillMode !== 'triggers' && skills.some((s) => !s.always) && lastUser?.content && !lastUser.skillPick && !controller.signal.aborted) {
-      const line = { id: uid(), role: 'tool', name: 'select_skills', status: 'running', args: {}, createdAt: Date.now() };
-      chat.messages.push(line);
-      if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
-      const ids = await pickSkillsWithAi(chat, lastUser, controller.signal);
-      if (ids) lastUser.skillPick = ids;
-      line.status = 'done';
-      line.args = { names: (ids || []).map((id) => skills.find((s) => s.id === id)?.name).filter(Boolean), fallback: !ids };
-      if (currentChatId === chat.id) updateMessageEl(line);
-      persist(chat);
     }
     // Klingt die Frage nach aktuellen Infos? Dann selbst suchen – auch Modelle ohne Werkzeuge bekommen echte Ergebnisse
     if (settings.webSearch && lastUser?.content && needsWeb(lastUser.content) && !controller.signal.aborted) {
@@ -1620,27 +1584,31 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const webOn = settings.webSearch;
   const wantsTools = true; // Gedächtnis-Werkzeuge gibt es immer
   const useTools = wantsTools && !noTools.has(model) && (!caps || caps.includes('tools'));
+  const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+  // Nur so viel Anleitung und Werkzeuge wie nötig – bei "Hallo" bekommt die KI fast nichts davon
+  const recent = topicWindow(chat.messages).windowMsgs.slice(-8);
+  const recentComputer = !lastUser?.topicStart && recent.some((m) => (m.role === 'tool' && !INFO_ONLY_TOOLS.has(m.name))
+    || (m.role === 'assistant' && /```(befehl|ordner|lesen|liste|ollama|datei:)/.test(m.content || '')));
+  const webResults = recent.some((m) => m.role === 'tool' && (m.name === 'web_search' || m.name === 'fetch_webpage'));
+  const pIntent = promptIntent(lastUser?.content, { recentComputer, web: webOn && (webResults || needsWeb(lastUser?.content)) });
   const tools = !useTools ? null : TOOL_DEFS.filter((t) => {
     const n = t.function.name;
     if (n === 'web_search' || n === 'fetch_webpage') return webOn;
-    if (n === 'search_chats' || n === 'remember') return true;
-    return agentOn;
+    if (n === 'search_chats') return pIntent.recall;
+    if (n === 'remember') return pIntent.remember;
+    return agentOn && pIntent.computer;
   });
 
   if (!sysInfo && agentOn) sysInfo = await localFs.info().catch(() => null);
-  const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
   const intent = wantsExecution(lastUser?.content);
-  // Von der KI gewählte Skills – sonst (oder als Ersatz) die Auslöse-Wörter
-  const activeSkills = lastUser?.skillPick
-    ? skillsByIds(skills, lastUser.skillPick, settings.disabledSkills)
-    : selectSkills(skills, lastUser?.content, settings.disabledSkills);
   const codeBlocks = collectCodeBlocks(chat.messages);
   const reuseIntent = agentOn && codeBlocks.length && wantsReuse(lastUser?.content);
-  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), skills: activeSkills, codeBlocks, knowledge: knowledgeContext(lastUser?.content || '') }) }];
+  const messages = [{ role: 'system', content: systemPrompt({ assistant, sys: sysInfo, nativeTools: useTools, agent: agentOn, webSearch: webOn, model, memory: settings.memory, recentChats: recentChatList(chat), codeBlocks: reuseIntent ? codeBlocks : [], intent: pIntent, learned: learnedFor(lastUser?.content, pIntent), userMessages: pIntent.recall ? userMessageList(chat) : [], knowledge: knowledgeContext(lastUser?.content || '') }) }];
   const vision = !caps || caps.includes('vision');
   let droppedImages = false;
-  // Bei neuem Thema nur das aktuelle Thema schicken – sonst vermischt die KI alles
-  const { windowMsgs } = topicWindow(chat.messages);
+  // Bei neuem Thema nur das aktuelle Thema schicken – sonst vermischt die KI alles.
+  // Fragt der Nutzer nach Früherem ("was hab ich vorhin geschrieben?"), bekommt die KI den ganzen Chat.
+  const windowMsgs = pIntent.recall ? chat.messages.slice(-40) : topicWindow(chat.messages).windowMsgs;
   for (const m of windowMsgs) {
     if (m.role === 'user') {
       const o = { role: 'user', content: buildContent(m.content, m.files) || '(Bild)' };
@@ -1679,14 +1647,15 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     toast(`${model} kann keine Bilder sehen – nimm z. B. gemma3 oder llava.`, 'error');
   }
 
-  const msg = { id: uid(), role: 'assistant', lang: /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/.test(lastUser?.content || '') ? 'other' : 'de', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now(), skills: activeSkills.filter((x) => !x.always).map((x) => x.name) };
+  const msg = { id: uid(), role: 'assistant', lang: /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/.test(lastUser?.content || '') ? 'other' : 'de', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now() };
   chat.messages.push(msg);
   busy.msgId = msg.id;
   if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }
 
-  const body = { model, messages, keep_alive: '30m', options: { temperature: Number(assistant.temperature ?? 0.7) } };
+  // repeat_penalty: kleine Modelle neigen sonst dazu, endlos dasselbe zu schreiben
+  const body = { model, messages, keep_alive: '30m', options: { temperature: Number(assistant.temperature ?? 0.7), repeat_penalty: 1.15, repeat_last_n: 256 } };
   if (Number(assistant.numCtx) > 0) body.options.num_ctx = Number(assistant.numCtx);
-  if (tools) body.tools = tools;
+  if (tools?.length) body.tools = tools;
   if (settings.think && caps?.includes('thinking') && !noThink.has(model)) body.think = true;
 
   const auto = settings.tts.auto && speaker.supported;
@@ -1716,6 +1685,20 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
           const off = msg.content.length - text.length;
           msg.content = `${msg.content.slice(0, off + rw.start)}${rw.code}\n\`\`\``;
           msg.reusedCode = rw.n;
+          roundCtrl.abort();
+          if (currentChatId === chat.id) scheduleStreamRender(msg);
+          break;
+        }
+      }
+      // Schreibt die KI in einer Schleife immer wieder dasselbe? Sofort stoppen
+      if (!toolCalls.length && msg.content.length - (msg.loopCheckedAt || 0) > 120) {
+        msg.loopCheckedAt = msg.content.length;
+        const { text } = splitThink(msg.content);
+        const cut = findRepetition(text);
+        if (cut >= 0) {
+          msg.content = `${msg.content.slice(0, msg.content.length - text.length + cut).trimEnd()}\n\n*(Die KI hat sich ständig wiederholt – die Antwort wurde gestoppt. Formuliere die Frage am besten etwas anders.)*`;
+          msg.looped = true;
+          turn.locked = true;
           roundCtrl.abort();
           if (currentChatId === chat.id) scheduleStreamRender(msg);
           break;
@@ -1762,9 +1745,12 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     signal.removeEventListener('abort', onAbort);
   }
   busy.msgId = null;
+  delete msg.loopCheckedAt;
   if (/```/.test(msg.content)) livePreview(chat, msg);
   if (toolCalls.length) msg.tool_calls = toolCalls;
   if (currentChatId === chat.id) updateMessageEl(msg);
+  // Nach einer Schleife oder Sperre: keine weiteren Aktionen in dieser Antwort
+  if (turn.locked) return false;
 
   // Aktionen bestimmen: native Tool-Aufrufe oder Codeblöcke im Text
   let actions;
@@ -1784,9 +1770,29 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
 
   let gotInfo = false;
   let anyRan = false;
+  turn.cmds = turn.cmds || new Map();
   for (const act of actions) {
     if (signal.aborted) return false;
     turn.done.add(key(act));
+    // Spam-Schutz: höchstens 5 Befehle pro Antwort, derselbe Befehl (auch anders geschrieben) nur einmal
+    if (act.name === 'run_command') {
+      const ck = commandKey(act.args?.command);
+      const total = [...turn.cmds.values()].reduce((a, b) => a + b, 0);
+      const reason = turn.cmds.has(ck) ? 'Diesen Befehl hast du in dieser Antwort schon ausgeführt.'
+        : total >= MAX_COMMANDS ? `In dieser Antwort wurden schon ${MAX_COMMANDS} Befehle ausgeführt – das Terminal ist jetzt gesperrt.` : '';
+      if (reason) {
+        turn.blocked = (turn.blocked || 0) + 1;
+        chat.messages.push({ id: uid(), role: 'tool', name: 'run_command', args: act.args, status: 'error', createdAt: Date.now(),
+          output: `GESPERRT: ${reason} Es werden keine weiteren Befehle ausgeführt. Schreibe KEINE Befehle mehr, sondern antworte dem Nutzer jetzt kurz mit dem, was du hast.`,
+          display: `Gesperrt (Schutz vor Wiederholungen): ${reason}` });
+        if (currentChatId === chat.id) renderMessages();
+        if (turn.blocked >= 2) { turn.locked = true; return false; }
+        gotInfo = true;
+        anyRan = true;
+        continue;
+      }
+      turn.cmds.set(ck, 1);
+    }
     const ran = await runAction(chat, act, signal);
     if (ran) { anyRan = true; if (INFO_TOOLS.has(act.name)) gotInfo = true; }
   }
@@ -1845,6 +1851,8 @@ async function runAction(chat, act, signal) {
       searchEngine: settings.searchEngine,
       searchKeys: settings.searchKeys,
       visibleTerminal: settings.visibleTerminal,
+      webSearch: settings.webSearch,
+      sys: sysInfo?.platform || '',
       memory: { search: (q) => memory.search(q, { skip: [...chat.messages].reverse().find((m) => m.role === 'user') }), remember: (f) => memory.remember(f) },
       question: [...chat.messages].reverse().find((m) => m.role === 'user')?.content || '',
       progress: (text, pct) => {
@@ -1854,6 +1862,7 @@ async function runAction(chat, act, signal) {
     });
     Object.assign(t, { status: 'done', output: r.output, display: r.display, sources: r.sources, path: r.path, failedRun: !!r.failed, hits: r.hits });
     if (t.name === 'read_file' && r.content != null) t.fileContent = r.content;
+    if (t.name === 'run_command' && !r.failed && !r.running) learnFromSuccess(chat, t);
     if (t.name === 'write_file' && currentChatId === chat.id) renderMessages(); // +/- Zahlen aktualisieren
     if (r.modelsChanged) refreshModels();
   } catch (err) {
@@ -2119,18 +2128,45 @@ const memory = {
   },
 };
 
+
+// Alle Nachrichten des Nutzers in diesem Chat (für "was hab ich vorhin geschrieben?")
+function userMessageList(chat) {
+  const last = [...chat.messages].reverse().find((m) => m.role === 'user');
+  return chat.messages.filter((m) => m.role === 'user' && m !== last && m.content)
+    .slice(-40).map((m) => m.content.replace(/\s+/g, ' ').slice(0, 300));
+}
+
 // ---------------------------------------------------------------------------
-// Skills (.skill-Dateien im Ordner "skills")
+// Gelernte Befehle: Hat ein Befehl nach einem Fehler oder einer Websuche geklappt,
+// merkt sich die App ihn – beim nächsten Mal (auch ohne Internet) weiß die KI ihn gleich
 // ---------------------------------------------------------------------------
-let skills = [];
-let skillsDir = '';
-async function refreshSkills() {
-  try {
-    const r = await skillsApi.list();
-    skills = r.skills || [];
-    skillsDir = r.dir || '';
-  } catch { /* Server alt oder offline */ }
-  return skills;
+let learned = loadList('od.learned', []);
+const saveLearned = () => saveJson('od.learned', learned);
+const LEARN_STOP = new Set('und oder der die das den dem ein eine einen mit von zu im in auf für über was wie wo mir mich mein meine bitte mal kannst du zeig zeige sag mach öffne'.split(' '));
+const learnTerms = (t) => String(t).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !LEARN_STOP.has(w));
+
+function learnFromSuccess(chat, t) {
+  const idx = chat.messages.indexOf(t);
+  let userMsg = null;
+  let struggled = false;
+  for (let k = idx - 1; k >= 0; k--) {
+    const m = chat.messages[k];
+    if (m.role === 'user') { userMsg = m; break; }
+    if (m.role === 'tool' && (m.name === 'web_search' || (m.name === 'run_command' && m.failedRun))) struggled = true;
+  }
+  if (!struggled || !userMsg?.content) return;
+  const command = String(t.args?.command || '').trim();
+  if (!command || command.length > 400) return;
+  const task = userMsg.content.replace(/\s+/g, ' ').slice(0, 120);
+  learned = [{ task, command, at: Date.now() }, ...learned.filter((l) => commandKey(l.command) !== commandKey(command))].slice(0, 100);
+  saveLearned();
+}
+
+function learnedFor(text, intent) {
+  if (!intent?.computer || !learned.length) return [];
+  const terms = learnTerms(text);
+  return learned.map((l) => ({ l, n: learnTerms(l.task).filter((w) => terms.some((x) => x === w || (x.length > 4 && w.length > 4 && x.slice(0, 5) === w.slice(0, 5)))).length }))
+    .filter((x) => x.n > 0).sort((a, b) => b.n - a.n).slice(0, 5).map((x) => x.l);
 }
 
 // ---------------------------------------------------------------------------
@@ -2231,41 +2267,6 @@ async function autoRemember(chat, lastUser) {
   return saved.filter(Boolean);
 }
 
-// Die KI sieht im Skill-Ordner nach und wählt die passenden Skills selbst
-async function pickSkillsWithAi(chat, lastUser, signal) {
-  const candidates = skills.filter((s) => !s.always && !settings.disabledSkills.includes(s.id));
-  if (!candidates.length || !lastUser?.content) return [];
-  const idx = chat.messages.indexOf(lastUser);
-  const prev = lastUser.topicStart ? '' : [...chat.messages.slice(0, idx)].reverse().find((m) => m.role === 'user')?.content || '';
-  const assistant = getAssistant(chat.assistantId);
-  const caps = await getCaps(chat.model);
-  const ctx = Number(assistant.numCtx) > 0 ? { num_ctx: Number(assistant.numCtx) } : {};
-  const body = {
-    model: chat.model, keep_alive: '30m', messages: skillRouterMessages(candidates, lastUser.content, prev),
-    options: { temperature: 0, num_predict: caps?.includes('thinking') ? 400 : 24, ...ctx },
-  };
-  if (caps?.includes('thinking')) body.think = false;
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), 25_000);
-  const onAbort = () => timeout.abort();
-  signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    let r;
-    try { r = await ollama.chatOnce(body, timeout.signal); } catch (e) {
-      if (!/think/i.test(e.message) || timeout.signal.aborted) throw e;
-      delete body.think;
-      r = await ollama.chatOnce(body, timeout.signal);
-    }
-    const nums = parseSkillPick(r.message?.content, candidates.length);
-    return nums ? nums.map((n) => candidates[n - 1].id) : null;
-  } catch {
-    return null; // Ersatz: Auslöse-Wörter
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener('abort', onAbort);
-  }
-}
-
 function recentChatList(chat) {
   return chats.filter((c) => c.id !== chat.id && c.messages.length)
     .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6)
@@ -2287,6 +2288,8 @@ setInterval(() => {
   const secs = Math.max(0, Math.round((Date.now() - (m.createdAt || Date.now())) / 1000));
   const text = `${secs} s · ${fmtTokens((chat.usage || 0) + (m.liveTokens || 0))} Tokens im Chat`;
   $$('[data-ti]').forEach((e) => { e.textContent = text; });
+  const phrase = thinkPhrase(m);
+  $$('.think-ind .ti-label').forEach((e) => { if (e.textContent !== phrase) e.textContent = phrase; });
 }, 500);
 
 // ---------------------------------------------------------------------------
@@ -2581,22 +2584,17 @@ function openSettings() {
         <div class="row"><input class="input grow" id="sSearchTest" placeholder="Suche testen, z. B. Wetter Berlin"><button class="btn" id="sSearchBtn">Testen</button></div>
         <div id="sSearchResult" class="hint" style="font-size:12.5px;color:var(--text-faint)"></div></div>
 
-      <div><div class="section-title">Skills</div>
-        <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Anleitungen für die KI als <b>.skill</b>-Dateien. Passende Skills werden automatisch geladen, je nachdem worum es in deiner Nachricht geht. Eigene Skills einfach in den Ordner legen (Vorlage: README.md im Ordner).</p>
-        <div class="field" style="margin-bottom:10px"><label>Skill-Auswahl</label><select class="input" id="sSkillMode">
-          <option value="ai" ${settings.skillMode !== 'triggers' ? 'selected' : ''}>Die KI wählt selbst (empfohlen) – liest Titel & Beschreibung aller Skills</option>
-          <option value="triggers" ${settings.skillMode === 'triggers' ? 'selected' : ''}>Nur über Auslöse-Wörter (schneller)</option></select></div>
-        <div class="list" id="skillList"><div class="empty-state" style="padding:8px">Lade …</div></div>
-        <div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn btn-sm" id="skillOpen">${icon('folder')} Skills-Ordner öffnen</button><button class="btn btn-sm" id="skillReload">${icon('refresh')} Neu laden</button></div>
-        <span class="hint" id="skillDir" style="font-size:12px;color:var(--text-faint)"></span></div>
-
       <div><div class="section-title">Gedächtnis</div>
         <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 0 8px">Das weiß die KI dauerhaft über dich. Sie merkt sich Dinge selbst oder wenn du „Merk dir …“ sagst. Frühere Chats durchsucht sie automatisch, wenn du dich darauf beziehst.</p>
         <div class="list" id="memList"></div>
         <div class="row" style="margin-top:8px"><input class="input grow" id="memAdd" placeholder="z. B. Ich heiße Alex und programmiere gern in Python"><button class="btn" id="memAddBtn">Hinzufügen</button></div>
         <div class="field-label" style="margin:16px 0 6px">Gespeichertes Wissen <span class="hint" style="font-weight:400;color:var(--text-faint)">– Texte, Webseiten und Antworten, die du mit „merk dir das“ gespeichert hast</span></div>
         <div class="list" id="knowList"></div>
-        <div style="margin-top:8px"><button class="btn btn-sm" id="knowAdd">${icon('plus')} Text hinzufügen</button></div></div>
+        <div style="margin-top:8px"><button class="btn btn-sm" id="knowAdd">${icon('plus')} Text hinzufügen</button></div>
+        <div class="field-label" style="margin:16px 0 6px">Gelernte Befehle <span class="hint" style="font-weight:400;color:var(--text-faint)">– Befehle, die nach einem Fehler oder einer Websuche geklappt haben. Die KI nutzt sie wieder, auch ohne Internet.</span></div>
+        <div class="list" id="learnList"></div>
+        <div class="field-label" style="margin:16px 0 6px">Gespeicherte Websuchen <span class="hint" style="font-weight:400;color:var(--text-faint)">– die letzten Suchergebnisse. Fällt das Internet aus, antwortet die KI daraus.</span></div>
+        <div class="row" style="align-items:center;gap:10px"><span id="webCacheInfo" style="font-size:13.5px"></span><button class="btn btn-sm" id="webCacheClear">${icon('trash')} Leeren</button></div></div>
 
       <div><div class="section-title">Sprachausgabe</div>
         ${sw('sTts', settings.tts.auto, 'Antworten automatisch vorlesen', 'Liest schon während die KI schreibt')}
@@ -2633,7 +2631,6 @@ function openSettings() {
   bind('#sThink', (t) => { settings.think = t.checked; });
   bind('#sAgent', (t) => { settings.agent = t.checked; });
   bind('#sTerm', (t) => { settings.visibleTerminal = t.checked; });
-  bind('#sSkillMode', (t) => { settings.skillMode = t.value; });
   bind('#sPreview', (t) => { settings.autoPreview = t.checked; });
   bind('#sUpdAuto', (t) => { settings.updateCheck = t.checked; });
   const showVersion = (v) => { if (v) q('#sVersion').innerHTML = `Installiert: <b>v${escapeHtml(v)}</b>${updateInfo?.newer ? ` · neu: <b>v${escapeHtml(updateInfo.latest)}</b>` : ''}`; };
@@ -2668,26 +2665,6 @@ function openSettings() {
   bind('#sVoice', (t) => { settings.tts.voiceURI = t.value; });
   bind('#sRate', (t) => { settings.tts.rate = Number(t.value); q('#sRateVal').textContent = t.value; }, 'input');
   bind('#sPitch', (t) => { settings.tts.pitch = Number(t.value); q('#sPitchVal').textContent = t.value; }, 'input');
-  const renderSkills = async () => {
-    await refreshSkills();
-    q('#skillDir').textContent = skillsDir ? `Ordner: ${skillsDir}` : '';
-    q('#skillList').innerHTML = skills.length ? skills.map((sk) => `<div class="list-item"><div class="li-main">
-        <div class="li-title">${escapeHtml(sk.name)} ${sk.always ? '<span class="badge accent">immer</span>' : ''}</div>
-        <div class="li-sub" title="${escapeHtml(sk.triggers.join(', '))}">${escapeHtml(sk.description || sk.file)}${sk.triggers.length ? ` · Auslöser: ${escapeHtml(sk.triggers.slice(0, 6).join(', '))}${sk.triggers.length > 6 ? ' …' : ''}` : ''}</div></div>
-        <label class="switch" title="Skill an/aus"><input type="checkbox" data-skill="${escapeHtml(sk.id)}" ${settings.disabledSkills.includes(sk.id) ? '' : 'checked'}><span></span></label></div>`).join('')
-      : '<div class="empty-state" style="padding:8px">Keine Skills gefunden. Lege .skill-Dateien in den Skills-Ordner.</div>';
-  };
-  renderSkills();
-  q('#skillList').addEventListener('change', (e) => {
-    const id = e.target.dataset?.skill;
-    if (!id) return;
-    settings.disabledSkills = settings.disabledSkills.filter((x) => x !== id);
-    if (!e.target.checked) settings.disabledSkills.push(id);
-    saveSettings();
-  });
-  q('#skillReload').onclick = async () => { await renderSkills(); toast(`${skills.length} Skills geladen`); };
-  q('#skillOpen').onclick = () => skillsApi.openFolder().catch((err) => toast(err.message, 'error'));
-
   const renderMem = () => {
     q('#memList').innerHTML = settings.memory.length
       ? settings.memory.map((f, i) => `<div class="list-item"><div class="li-main" style="font-size:14px">${escapeHtml(f)}</div><div class="li-actions"><button class="icon-btn" data-mem-del="${i}" title="Vergessen">${icon('trash')}</button></div></div>`).join('')
@@ -2715,6 +2692,23 @@ function openSettings() {
     saveKnowledge();
     renderKnow();
   });
+  const renderLearned = () => {
+    q('#learnList').innerHTML = learned.length
+      ? learned.map((l, i) => `<div class="list-item"><div class="li-main"><div class="li-title" style="font-family:var(--mono);font-size:13px">${escapeHtml(l.command)}</div><div class="li-sub">${escapeHtml(l.task)}</div></div><div class="li-actions"><button class="icon-btn" data-learn-del="${i}" title="Vergessen">${icon('trash')}</button></div></div>`).join('')
+      : '<div class="empty-state" style="padding:8px">Noch nichts gelernt.</div>';
+  };
+  renderLearned();
+  q('#learnList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-learn-del]');
+    if (b) { learned.splice(+b.dataset.learnDel, 1); saveLearned(); renderLearned(); }
+  });
+  const renderWebCache = () => {
+    let n = 0;
+    try { n = (JSON.parse(localStorage.getItem('od.webcache')) || []).length; } catch { /* leer */ }
+    q('#webCacheInfo').textContent = n ? `${n} Suchen gespeichert` : 'Noch keine Suchen gespeichert';
+  };
+  renderWebCache();
+  q('#webCacheClear').onclick = () => { try { localStorage.removeItem('od.webcache'); } catch { /* egal */ } renderWebCache(); };
   q('#knowAdd').onclick = () => {
     const m2 = openModal({
       title: 'Wissen hinzufügen',
@@ -2848,7 +2842,6 @@ async function init() {
     toast('Chats konnten nicht geladen werden: ' + err.message, 'error');
   }
   newChat();
-  refreshSkills();
   await checkStatus();
   renderAll();
   // Neue Version? Beim Start und dann alle 6 Stunden nachsehen

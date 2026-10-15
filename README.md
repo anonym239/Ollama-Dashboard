@@ -19,7 +19,6 @@ Ein modernes, cleanes KI-Chat-Dashboard für deine **lokalen KIs mit [Ollama](ht
   - Optional mit kostenlosem Kontingent: Google Custom Search API, Tavily oder eine eigene SearXNG-Instanz
 - 🖥️ **Code-Vorschau**: Webseiten und Spiele, die die KI programmiert, erscheinen rechts als Live-Vorschau. Die Breite lässt sich ziehen.
 - ▶️ **YouTube & Vorschau-Karten**: Gefundene Videos und Seiten erscheinen als Karten mit Bild, Titel und Kanal.
-- 📘 **Skills**: Anleitungen für die KI als `.skill`-Dateien im Ordner `skills`, z. B. wie sie richtig im Web sucht, programmiert oder das Terminal nutzt. Passende Skills werden automatisch geladen. Eigene kannst du einfach dazulegen, siehe [`skills/README.md`](skills/README.md).
 - 🧠 **Gedächtnis & Wissensspeicher**: Die KI erinnert sich an frühere Chats und merkt sich Infos über dich. Mit „merk dir das“ speichert sie auch lange Texte, Dateien, Webseiten oder ihre letzte Antwort dauerhaft, verfügbar in allen Chats.
 - 📎 **Dateien schicken**: Bilder (für Vision-Modelle wie `gemma3`, `llava`), PDFs, Text- und Code-Dateien, per Klick, Drag & Drop oder Einfügen
 - 🔊 **Automatisches Vorlesen** (Text-to-Speech), schon während die KI schreibt. Stimme, Tempo und Tonhöhe sind einstellbar.

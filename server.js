@@ -13,8 +13,6 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_OLLAMA = normalizeUrl(process.env.OLLAMA_URL || 'http://127.0.0.1:11434');
 const PUBLIC_DIR = path.join(__dirname, 'public');
-// Skills: .skill-Dateien mit Anleitungen für die KI (neben der App, eigene einfach dazulegen)
-const SKILLS_DIR = process.env.SKILLS_DIR || path.join(__dirname, 'skills');
 // Geheimer Schlüssel pro Serverstart: nur die eigene Oberfläche darf lokale Aktionen ausführen
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const IS_WIN = process.platform === 'win32';
@@ -155,16 +153,16 @@ async function ollamaVersion(url = DEFAULT_OLLAMA) {
   }
 }
 
+// Wird alle paar Sekunden abgefragt, solange Ollama nicht läuft – deshalb erst die Dateien prüfen
+// und "ollama --version" höchstens einmal pro Minute starten
+let installedCache = { at: 0, value: null };
 async function ollamaInstalled() {
-  const r = await run('ollama --version', { timeout: 10_000 });
-  if (r.code === 0) return (r.stdout + r.stderr).trim();
-  // Windows: Standard-Installationsort prüfen
-  if (IS_WIN && process.env.LOCALAPPDATA) {
-    const exe = path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe');
-    if (fs.existsSync(exe)) return 'installiert';
-  }
+  if (IS_WIN && process.env.LOCALAPPDATA && fs.existsSync(path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe'))) return 'installiert';
   if (process.platform === 'darwin' && fs.existsSync('/Applications/Ollama.app')) return 'installiert';
-  return null;
+  if (Date.now() - installedCache.at < 60_000) return installedCache.value;
+  const r = await run('ollama --version', { timeout: 10_000 });
+  installedCache = { at: Date.now(), value: r.code === 0 ? (r.stdout + r.stderr).trim() : null };
+  return installedCache.value;
 }
 
 function ollamaBinary() {
@@ -178,16 +176,40 @@ function ollamaBinary() {
   return 'ollama';
 }
 
-async function startOllama() {
+// Mehrfaches Klicken startet Ollama trotzdem nur einmal
+let ollamaStarting = null;
+function startOllama() {
+  if (!ollamaStarting) ollamaStarting = doStartOllama().finally(() => { ollamaStarting = null; });
+  return ollamaStarting;
+}
+
+async function doStartOllama() {
   if (await ollamaVersion()) return { ok: true, already: true };
   const env = { ...process.env };
   // OLLAMA_HOST (Bind-Adresse) aus unserer Ziel-URL ableiten
   try { env.OLLAMA_HOST = new URL(DEFAULT_OLLAMA).host; } catch { /* Standard */ }
-  await new Promise((resolve, reject) => {
-    const child = spawn(ollamaBinary(), ['serve'], { detached: true, stdio: 'ignore', windowsHide: true, env });
-    child.once('error', reject);
-    child.once('spawn', () => { ollamaChild = child; child.unref(); resolve(); });
-  });
+  if (IS_WIN) {
+    // Ollama startet für GPU-Erkennung und jedes Modell eigene Hilfsprozesse. Ohne eigene Konsole
+    // (detached) bekäme jeder davon ein sichtbares CMD-Fenster. Deshalb: über PowerShell mit einer
+    // unsichtbaren Konsole starten – die Hilfsprozesse nutzen sie mit, und Ollama läuft weiter,
+    // auch wenn das Dashboard geschlossen wird.
+    const exe = ollamaBinary().replace(/'/g, "''");
+    const r = await new Promise((resolve) => {
+      const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `Start-Process -FilePath '${exe}' -ArgumentList 'serve' -WindowStyle Hidden`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, env });
+      let err = '';
+      ps.stderr.on('data', (d) => { err += d; });
+      ps.on('error', (e) => resolve({ code: -1, err: e.message }));
+      ps.on('close', (code) => resolve({ code, err }));
+    });
+    if (r.code !== 0) return { ok: false, error: `Ollama ließ sich nicht starten: ${r.err.trim().split('\n')[0] || 'unbekannter Fehler'}` };
+  } else {
+    await new Promise((resolve, reject) => {
+      const child = spawn(ollamaBinary(), ['serve'], { detached: true, stdio: 'ignore', env });
+      child.once('error', reject);
+      child.once('spawn', () => { ollamaChild = child; child.unref(); resolve(); });
+    });
+  }
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const v = await ollamaVersion();
@@ -235,8 +257,6 @@ async function resolvePath(p) {
   const home = require('os').homedir();
   const desk = await desktopDir();
   if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return path.resolve(home, p.slice(2));
-  const sk = p.match(/^(@skills|skills-ordner|skill-ordner|skillordner)([\\/]|$)/i);
-  if (sk) return path.resolve(SKILLS_DIR, p.slice(sk[0].length));
   const m = p.match(/^(desktop|schreibtisch)([\\/]|$)/i);
   if (m) return path.resolve(desk, p.slice(m[0].length));
   if (path.isAbsolute(p)) return path.resolve(p);
@@ -246,7 +266,7 @@ async function resolvePath(p) {
 async function fsAction(action, body) {
   const fsp = fs.promises;
   if (action === 'info') {
-    return { desktop: await desktopDir(), home: require('os').homedir(), platform: process.platform, skillsDir: SKILLS_DIR };
+    return { desktop: await desktopDir(), home: require('os').homedir(), platform: process.platform };
   }
   const target = await resolvePath(body.path);
   if (action === 'stat') {
@@ -486,16 +506,30 @@ function keyTerms(query) {
     .filter((w) => w.length > 1 && !STOPWORDS.has(w)))];
 }
 
+// Allgemeine Wörter ("neueste", "beste", "aktuell") sind nie das Thema – sonst passt z. B. "Neuste Duden-Wörter" zu "neuste RTX Grafikkarte"
+const GENERIC_TERM = /^(neu\p{L}*|aktuell\p{L}*|letzt\p{L}*|best\p{L}*|gut\p{L}*|groß\p{L}*|klein\p{L}*|schnell\p{L}*|günstig\p{L}*|billig\p{L}*|teuer\p{L}*|top|heute|jetzt|gerade|welche\p{L}*|gibt|ist|sind|alle|viele|latest|new|newest|best|current|top|today|recherch\p{L}*|such\p{L}*|internet|web|online|bitte|infos?|information\p{L}*)$/u;
+
 // Wichtigste Begriffe: Namen/Produkte (Großschreibung mitten im Satz, Ziffern, unbekannte Wörter)
 function anchorTerms(query, terms) {
   const caps = String(query).split(/\s+/).slice(1).filter((w) => /^[A-ZÄÖÜ]/.test(w)).map((w) => w.toLowerCase().replace(/[^\p{L}\p{N}+#.]/gu, ''));
-  const anchors = terms.filter((t) => caps.includes(t) || /\d/.test(t) || !/(ung|heit|keit|ion|en|er|ern|lich|isch)$/.test(t));
-  return anchors.length ? anchors : terms;
+  const specific = terms.filter((t) => !GENERIC_TERM.test(t) && !/^(19|20)\d{2}$/.test(t)); // Jahreszahlen sind kein Thema
+  const anchors = specific.filter((t) => caps.includes(t) || /\d/.test(t) || !/(ung|heit|keit|ion|en|er|ern|lich|isch)$/.test(t));
+  return anchors.length ? anchors : specific.length ? specific : terms;
 }
 
-function scoreResult(r, terms, anchors) {
+// Starke Begriffe: Abkürzungen/Produktnamen in GROSSBUCHSTABEN (RTX, iPhone 16, GPT-5) oder mit Ziffern.
+// Kommt so ein Begriff in der Frage vor, MUSS er im Treffer stehen.
+function strongTerms(query) {
+  return [...new Set(String(query).split(/[^\p{L}\p{N}+#.-]+/u)
+    .filter((w) => w.length >= 2 && (/^[A-ZÄÖÜ0-9][A-ZÄÖÜ0-9+#.-]+$/.test(w) && /[A-ZÄÖÜ]/.test(w) || /\p{L}/u.test(w) && /\d/.test(w)))
+    .map((w) => w.toLowerCase().replace(/^[.-]+|[.-]+$/g, '')))].filter((w) => w && !/^\d+$/.test(w));
+}
+
+function scoreResult(r, terms, anchors, strong = []) {
   if (!terms.length) return 1;
   const hay = `${r.title} ${r.snippet} ${r.url}`.toLowerCase();
+  if (strong.length && !strong.some((t) => hay.includes(t))) return 0;
+  if (anchors.length && !anchors.some((t) => hay.includes(t))) return 0;
   let host = '';
   try { host = new URL(r.url).hostname.replace(/^www\./, ''); } catch { /* egal */ }
   const hits = terms.filter((t) => hay.includes(t)).length / terms.length;
@@ -677,6 +711,7 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
   const yt = wantsYouTube(query) ? searchYouTube(query).catch(() => null) : null;
   const terms = keyTerms(query);
   const anchors = anchorTerms(query, terms);
+  const strong = strongTerms(query);
   // Gewählter Anbieter zuerst; passen die Treffer nicht, werden weitere Anbieter dazugenommen
   const order = [preferred, 'google', 'duckduckgo', 'bing', 'brave'].filter((e, i, a) => ENGINES[e] && a.indexOf(e) === i);
   const seen = new Set();
@@ -686,7 +721,7 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
   for (const key of order) {
     const [label, search] = ENGINES[key];
     try {
-      const found = (await search(query, keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors) }));
+      const found = (await search(query, keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors, strong) }));
       const good = found.filter((r) => r.score >= 0.75 && !seen.has(r.url));
       good.forEach((r) => seen.add(r.url));
       if (good.length) { results.push(...good); engines.push(label); }
@@ -700,7 +735,7 @@ async function webSearch(query, { pages = 4, engine: preferred = 'google', keys 
   if (!results.length && anchors.length && anchors.join(' ') !== query.toLowerCase()) {
     for (const key of order.slice(0, 2)) {
       try {
-        const found = (await ENGINES[key][1](anchors.join(' '), keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors) }));
+        const found = (await ENGINES[key][1](anchors.join(' '), keys)).map((r) => ({ ...r, score: scoreResult(r, terms, anchors, strong) }));
         results = found.filter((r) => r.score >= 0.5);
         if (results.length) { engines.push(ENGINES[key][0]); break; }
       } catch { /* weiter */ }
@@ -964,51 +999,6 @@ async function terminalRun(original, { timeout = 120_000 } = {}) {
   return { code: 0, stdout: readText(`${base}.out`) + '\n[Der Befehl läuft im Terminal-Fenster weiter (z. B. ein Server oder ein offenes Programm). Bisherige Ausgabe siehe oben.]', stderr: '', visible: true, command, running: true };
 }
 
-// ---------- Skills ----------
-// Aufbau einer .skill-Datei:
-//   ---
-//   name: Websuche
-//   description: Wofür der Skill da ist
-//   triggers: suche, internet, recherche      (Wörter, bei denen er geladen wird)
-//   always: false                              (true = immer laden)
-//   ---
-//   Anleitung in normalem Text/Markdown …
-function parseSkill(file, text) {
-  text = String(text).replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
-  const meta = {};
-  let body = text;
-  const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (m) {
-    for (const line of m[1].split('\n')) {
-      const kv = line.match(/^\s*([\w-]+)\s*:\s*(.*)$/);
-      if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, '');
-    }
-    body = m[2];
-  }
-  const base = path.basename(file).replace(/\.skill$/i, '');
-  return {
-    id: base,
-    file: path.basename(file),
-    name: meta.name || base,
-    description: meta.description || '',
-    triggers: (meta.triggers || '').split(/[,;]/).map((t) => t.trim().toLowerCase()).filter(Boolean),
-    always: /^(true|ja|yes|1)$/i.test(meta.always || ''),
-    priority: Math.min(10, Math.max(0.1, Number(meta.priority) || 1)),
-    content: body.trim().slice(0, 8000),
-  };
-}
-
-function loadSkills() {
-  fs.mkdirSync(SKILLS_DIR, { recursive: true });
-  return fs.readdirSync(SKILLS_DIR)
-    .filter((f) => /\.skill$/i.test(f))
-    .sort()
-    .map((f) => {
-      try { return parseSkill(f, fs.readFileSync(path.join(SKILLS_DIR, f), 'utf8')); } catch { return null; }
-    })
-    .filter((x) => x && x.content);
-}
-
 // ---------- Updates: neue Version auf GitHub finden, herunterladen, prüfen, installieren, neu starten ----------
 const UPDATE_REPO = 'anonym239/Ollama-Dashboard';
 const APP_VERSION = (() => {
@@ -1204,15 +1194,6 @@ async function handleLocal(req, res) {
       const body = await readBody(req);
       return json(res, 200, await fetchPage(String(body.url || ''), body.query ? 6000 : 12_000, String(body.query || '')));
     }
-    if (route === '/local/skills' && req.method === 'GET') {
-      return json(res, 200, { dir: SKILLS_DIR, skills: loadSkills() });
-    }
-    if (route === '/local/skills/open' && req.method === 'POST') {
-      fs.mkdirSync(SKILLS_DIR, { recursive: true });
-      const q = JSON.stringify(SKILLS_DIR);
-      spawn(IS_WIN ? `start "" ${q}` : process.platform === 'darwin' ? `open ${q}` : `xdg-open ${q}`, { shell: true, stdio: 'ignore', detached: true }).on('error', () => {}).unref();
-      return json(res, 200, { ok: true, dir: SKILLS_DIR });
-    }
     const fsRoute = route.match(/^\/local\/fs\/(\w+)$/);
     if (fsRoute && req.method === 'POST') {
       const body = await readBody(req, 20_000_000);
@@ -1258,7 +1239,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, parseSkill, loadSkills, SKILLS_DIR, keyTerms, anchorTerms, scoreResult, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, updaterScript, APP_VERSION };
+module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, keyTerms, anchorTerms, strongTerms, scoreResult, startOllama, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, updaterScript, APP_VERSION };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

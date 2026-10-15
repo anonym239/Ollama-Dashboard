@@ -38,11 +38,6 @@ export const localFs = {
   open: (path) => call('/local/fs/open', { method: 'POST', body: { path } }),
 };
 
-export const skillsApi = {
-  list: () => call('/local/skills'),
-  openFolder: () => call('/local/skills/open', { method: 'POST' }),
-};
-
 export const web = {
   search: (query, engine = 'google', keys = {}, pages = 4) => call('/local/web/search', { method: 'POST', body: { query, engine, keys, pages } }),
   fetch: (url, query = '') => call('/local/web/fetch', { method: 'POST', body: { url, query } }),
