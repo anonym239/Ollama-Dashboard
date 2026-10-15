@@ -23,6 +23,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -84,21 +85,26 @@ jobs:
 
       - name: Update-Test (installieren, App starten, drüber updaten, neue App läuft)
         if: steps.v.outputs.skip != 'true'
+        timeout-minutes: 8
         shell: pwsh
         run: |
           $setup = "dist\OllamaDashboard-Setup-${{ steps.v.outputs.version }}.exe"
           $dir = "$env:RUNNER_TEMP\od-update-test"
           $env:NO_OPEN = "1"; $env:PORT = "3997"
           # 1) Normal installieren
-          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER',"/DIR=$dir" -Wait -PassThru
+          # Hinweis: nicht "Start-Process -Wait" – das wartet in PowerShell 7 auch auf alle vom Setup gestarteten Programme
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER',"/DIR=$dir" -PassThru
+          if (-not $p.WaitForExit(180000)) { throw 'Installation hängt' }
           if ($p.ExitCode -ne 0) { throw "Installation fehlgeschlagen: $($p.ExitCode)" }
           # 2) App starten
           $app = Start-Process -FilePath "$dir\OllamaDashboard.exe" -PassThru -WindowStyle Hidden
           Start-Sleep -Seconds 4
           if (-not (Invoke-WebRequest -Uri "http://localhost:3997/" -UseBasicParsing).Content.Contains('Ollama Dashboard')) { throw 'App antwortet nicht' }
           # 3) So updaten, wie das Dashboard es tut – die laufende App muss geschlossen und neu gestartet werden
-          $u = Start-Process -FilePath $setup -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCANCEL','/SP-','/UPDATE=1','/CURRENTUSER',"/DIR=$dir","/LOG=$env:RUNNER_TEMP\od-update.log" -Wait -PassThru
-          Get-Content "$env:RUNNER_TEMP\od-update.log" -Tail 15
+          $u = Start-Process -FilePath $setup -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCANCEL','/SP-','/UPDATE=1','/CURRENTUSER',"/DIR=$dir","/LOG=$env:RUNNER_TEMP\od-update.log" -PassThru
+          $done = $u.WaitForExit(240000)
+          Get-Content "$env:RUNNER_TEMP\od-update.log" -Tail 25
+          if (-not $done) { throw 'Update-Setup hängt' }
           if ($u.ExitCode -ne 0) { throw "Update fehlgeschlagen: $($u.ExitCode)" }
           if (-not $app.HasExited) { throw 'Alte App wurde nicht geschlossen' }
           # 4) Neue App läuft wieder
