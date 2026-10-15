@@ -157,6 +157,8 @@ Regeln:
 - Ordner und Dateien immer mit ordner-/datei:-Blöcken anlegen, nicht per Terminal.
 - Es gibt schon ein sichtbares Terminal-Fenster – öffne kein weiteres (kein "start cmd").
 - Vorhandene Datei ändern: erst lesen, dann die komplette neue Fassung mit datei: speichern.
+- Steht der Code schon im Chat und soll er geändert oder verbessert werden: nimm genau diesen Code als Grundlage und ändere nur, was nötig ist. Fang nicht von vorne an und erfinde kein anderes Programm.
+- Sagt der Nutzer „führ das aus“, führt die App den Code aus deiner letzten Antwort selbst aus – du bekommst das Ergebnis.
 - „Programmiere mir X“: Projektordner auf dem Desktop, alle Dateien vollständig speichern, danach öffnen.${webSearch ? `
 - Weißt du einen Befehl nicht GANZ sicher, suche ihn zuerst im Internet (z. B. \`\`\`suche\n${win ? 'Windows CMD' : 'Terminal'} Befehl Speicherplatz anzeigen\n\`\`\`) statt zu raten. Erfundene Befehle gibt es nicht.` : ''}`);
     if (learned.length) {
@@ -662,3 +664,54 @@ export function findRepetition(text) {
 
 // Gleicher Befehl, nur anders geschrieben?
 export const commandKey = (c) => String(c || '').toLowerCase().replace(/\s+/g, ' ').replace(/["']/g, '').trim();
+
+// ---------- "Führ das aus" – Code aus der vorigen Antwort direkt ausführen ----------
+// Kleine Modelle schreiben den Code dann meist neu oder weigern sich. Die App erledigt das selbst.
+const RUN_VERB = /\b(führ\w*|ausführ\w*|ausf(ü|ue)hren|run|starte?n?|teste?n?|probier\w*)\b/i;
+const RUN_OBJ = /\b(befehl\w*|kommando\w*|code|skript|script|programm|das|es|ihn|sie|davon|oben)\b/i;
+export function wantsRunPrevious(text) {
+  const t = String(text || '');
+  if (/```/.test(t) || t.length > 200) return false;
+  if (/\b(ollama|modell|server)\b/i.test(t)) return false; // "starte ollama" ist etwas anderes
+  return RUN_VERB.test(t) && RUN_OBJ.test(t);
+}
+
+const SHELL_BLOCK = /^(cmd|bat|batch|shell|sh|bash|zsh|console|terminal|befehl|powershell|ps1|pwsh|command)$/i;
+const PS_BLOCK = /^(powershell|ps1|pwsh)$/i;
+const looksLikeCommands = (code) => code.split('\n').filter((l) => l.trim()).length <= 15
+  && code.split('\n').every((l) => !l.trim() || /^[@\w.\\/:"%$~-][^{};<>]*$/.test(l.trim()) || /\|/.test(l));
+
+// Welche Aktionen führen den Code aus? blocks: [{ lang, path, code }]
+export function runActionsFor(blocks, platform = 'win32') {
+  const win = platform === 'win32';
+  const acts = [];
+  const shellBlocks = blocks.filter((b) => !b.path && (SHELL_BLOCK.test(b.lang) || (!b.lang && looksLikeCommands(b.code))));
+  if (shellBlocks.length) {
+    for (const b of shellBlocks) {
+      const lines = b.code.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l))
+        .map((l) => l.replace(/^(?:[A-Za-z]:\\[^>]*>|\$|>)\s*/, ''));
+      if (!lines.length) continue;
+      const command = PS_BLOCK.test(b.lang) && win ? `powershell -NoProfile -Command "${lines.join('; ').replace(/"/g, '\\"')}"` : lines.join(' && ');
+      acts.push({ name: 'run_command', args: { command } });
+    }
+    return acts;
+  }
+  // Sonst: das letzte ausführbare Programm (Python, JavaScript, Webseite, Batch-Datei)
+  const runner = { py: 'python', python: 'python', js: 'node', javascript: 'node', mjs: 'node' };
+  for (const b of [...blocks].reverse()) {
+    const ext = (b.path ? b.path.split('.').pop() : b.lang || '').toLowerCase();
+    const q = (p) => `"${p.replace(/\//g, win ? '\\' : '/')}"`;
+    if (runner[ext] || /^(html?|bat|cmd)$/.test(ext)) {
+      let path = b.path;
+      if (!path) {
+        path = `Desktop/KI-Skripte/skript.${runner[ext] === 'python' ? 'py' : runner[ext] === 'node' ? 'js' : ext}`;
+        acts.push({ name: 'create_folder', args: { path: 'Desktop/KI-Skripte' } });
+        acts.push({ name: 'write_file', args: { path, content: b.code.replace(/\n?$/, '\n') } });
+      }
+      const command = runner[ext] ? `${runner[ext]} ${q(path)}` : /^html?$/.test(ext) ? (win ? `start "" ${q(path)}` : `xdg-open ${q(path)}`) : (win ? `call ${q(path)}` : `sh ${q(path)}`);
+      acts.push({ name: 'run_command', args: { command } });
+      return acts;
+    }
+  }
+  return acts;
+}

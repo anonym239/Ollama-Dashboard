@@ -13,6 +13,15 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.0.3
+
+- **„Führ das aus“ funktioniert:** Sagst du nach einer Antwort mit Code „führ den Befehl aus“, „starte das Skript“ oder „teste den Code“, führt die App den vorhandenen Code selbst aus, statt die KI ihn neu schreiben zu lassen:
+  - CMD-, Batch- und PowerShell-Befehle laufen direkt im Terminal.
+  - Python- und JavaScript-Code wird in `Desktop/KI-Skripte` gespeichert und gestartet.
+  - Webseiten werden im Browser geöffnet.
+  - Die KI erklärt danach nur noch das Ergebnis.
+- **Vorhandenen Code ändern statt neu schreiben:** Soll Code verbessert werden, nimmt die KI den Code aus dem Chat als Grundlage und ändert nur, was nötig ist.
+
 ### Neu in 2.0.2
 
 - **Update per Klick repariert:** Das Setup lief bisher unsichtbar im Hintergrund. Wartete Windows z. B. auf eine Bestätigung, hing das Update endlos. Jetzt:

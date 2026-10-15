@@ -6,7 +6,7 @@ import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, updates } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -1598,6 +1598,26 @@ async function generate(chat) {
       turn.done.add(`${act.name}:${JSON.stringify(act.args)}`);
       await runAction(chat, act, controller.signal);
     }
+    // "Führ das aus" -> den Code aus der vorigen Antwort selbst ausführen (statt ihn neu schreiben zu lassen)
+    if (settings.agent && lastUser?.content && wantsRunPrevious(lastUser.content) && !controller.signal.aborted) {
+      const idx = chat.messages.indexOf(lastUser);
+      const prevAi = chat.messages.slice(0, idx).reverse().find((m) => m.role === 'assistant' && !m.superseded && /```/.test(m.content || ''));
+      if (prevAi) {
+        if (!sysInfo) sysInfo = await localFs.info().catch(() => null);
+        const blocks = messageBlocks(splitThink(prevAi.content).text)
+          .filter((b) => !b.open && !/^(suche|search|erinnern|merken|ordner|folder|lesen|liste|ollama)$/i.test(b.lang))
+          .map((b) => ({ lang: b.lang, path: b.path, code: resolveCodeRef(b.code, b.path || `x.${b.lang}`, collectCodeBlocks(chat.messages)) ?? b.code }));
+        const acts = runActionsFor(blocks, sysInfo?.platform || 'win32');
+        turn.cmds = turn.cmds || new Map();
+        for (const act of acts) {
+          if (controller.signal.aborted) break;
+          turn.done.add(`${act.name}:${JSON.stringify(act.args || {})}`);
+          if (act.name === 'run_command') turn.cmds.set(commandKey(act.args.command), 1);
+          await runAction(chat, act, controller.signal);
+        }
+        if (acts.length) lastUser.ranPrevious = true;
+      }
+    }
     // Klingt die Frage nach aktuellen Infos? Dann selbst suchen – auch Modelle ohne Werkzeuge bekommen echte Ergebnisse
     if (settings.webSearch && lastUser?.content && needsWeb(lastUser.content) && !controller.signal.aborted) {
       // Nachfrage ("und das allerneueste Video?") -> vorigen Suchbegriff wiederverwenden
@@ -1690,8 +1710,9 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       const reminder = translate
         ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
         : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
+      const ranHint = lastUser?.ranPrevious ? '\n\n(Die App hat den Code aus deiner vorigen Antwort gerade selbst ausgeführt – das echte Ergebnis steht oben. Schreibe den Code NICHT noch einmal und führe ihn nicht erneut aus. Erkläre dem Nutzer kurz und verständlich, was herausgekommen ist. Gab es einen Fehler, schlage eine Lösung vor.)' : '';
       const savedHint = lastUser?.remembered?.length ? `\n\n(Die App hat das bereits dauerhaft gespeichert: ${lastUser.remembered.join(', ')}. Schreibe KEINEN merken-Block. Bestätige kurz und fasse das Gemerkte in 2–3 Sätzen zusammen.)` : '';
-      messages[k] = { ...messages[k], content: messages[k].content + (savedHint || intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart })) + reminder };
+      messages[k] = { ...messages[k], content: messages[k].content + ranHint + (savedHint || intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart })) + reminder };
       break;
     }
   }
