@@ -869,6 +869,16 @@ function baseVersion(chat, m, b) {
   return null;
 }
 
+// Während die KI noch schreibt: mit dem gleich langen Anfang der alten Fassung vergleichen
+function liveDiff(chat, m, b) {
+  const code = b.code.replace(/\n$/, '');
+  const base = baseVersion(chat, m, b);
+  const n = code ? code.split('\n').length : 0;
+  if (base == null) return { added: n, removed: 0, isNew: true };
+  const old = base.replace(/\r\n?/g, '\n').split('\n').slice(0, n).join('\n');
+  return { ...diffStats(diffLines(old, code)), isNew: false };
+}
+
 function fileDiff(chat, m, b) {
   const code = codeOf(chat, m, b);
   const base = baseVersion(chat, m, b);
@@ -882,16 +892,16 @@ function fileDiff(chat, m, b) {
 
 function filesCardHtml(chat, m, files, streaming) {
   const rows = files.map((b) => {
-    const d = b.open ? { added: b.code.split('\n').length - 1, removed: 0 } : fileDiff(chat, m, b);
+    const d = b.open ? liveDiff(chat, m, b) : fileDiff(chat, m, b);
     const name = b.path ? b.path.split(/[\\/]/).pop() : `Code.${b.lang || 'txt'}`;
     return { b, d, name };
   });
   const total = rows.reduce((acc, r) => ({ added: acc.added + r.d.added, removed: acc.removed + r.d.removed }), { added: 0, removed: 0 });
   const expanded = expandedCards.has(m.id) || rows.length <= 5;
   const shownRows = expanded ? rows : rows.slice(0, 4);
-  const writing = streaming && files.some((f) => f.open);
+  const cur = streaming ? rows.find((r) => r.b.open) : null;
   return `<div class="files-card" data-msg="${m.id}">
-    <div class="fc-head">${writing ? `<span class="fc-spin">${icon('loader')}</span> Schreibt ${rows.length === 1 ? 'Datei' : 'Dateien'} …` : `${rows.length} ${rows.length === 1 ? 'Datei' : 'Dateien'} ${rows.some((r) => r.b.path) ? 'bearbeitet' : 'mit Code'}`}</div>
+    <div class="fc-head">${cur ? `<span class="fc-spin">${icon('loader')}</span> ${shim(`${cur.d.isNew ? 'Schreibt' : 'Ändert'} Datei: ${escapeHtml(cur.name)}`)} <span class="fc-add">+${cur.d.added}</span> <span class="fc-del">−${cur.d.removed}</span>` : `${rows.length} ${rows.length === 1 ? 'Datei' : 'Dateien'} ${rows.some((r) => r.b.path) ? 'bearbeitet' : 'mit Code'}`}</div>
     ${shownRows.map((r) => `<button type="button" class="fc-row" data-file-idx="${r.b.idx}" title="${escapeHtml(r.b.path || r.name)} – Änderungen anzeigen">
       <span class="fc-ico">${icon('file')}</span><span class="fc-name">${escapeHtml(r.name)}</span>${r.b.open ? '<span class="fc-live">schreibt …</span>' : ''}
       <span class="fc-add">+${r.d.added}</span><span class="fc-del">−${r.d.removed}</span></button>`).join('')}
@@ -919,7 +929,7 @@ function withFilesCard(text, streaming, m) {
 
 function bodyHtml(text, streaming, m) {
   if (m.error) return `${text ? renderMarkdown(text) : ''}<div class="banner error" style="margin-top:6px"><div class="b-icon">${icon('x')}</div><div class="b-text"><strong>Fehler</strong><span>${escapeHtml(m.error)}</span></div></div>`;
-  if (streaming && !text.trim()) return thinkIndicator(thinkPhrase(m));
+  if (streaming && !text.trim()) return thinkIndicator(thinkPhrase(m, currentChat()));
   let html = (m.role === 'assistant' && withFilesCard(text, streaming, m)) || renderMarkdown(text);
   if (m.reusedCode && !streaming) html += `<p class="reuse-note">${icon('copy')} Code ${m.reusedCode} aus dem Chat übernommen – nicht neu geschrieben</p>`;
   if (m.stopped) html += '<p style="color:var(--text-faint);font-size:13px">Gestoppt</p>';
@@ -934,8 +944,35 @@ const shim = (html) => `<span class="shimmer" style="${shimDelay()}">${html}</sp
 // Wechselnde Status-Texte, solange die KI überlegt – richtet sich nach der vergangenen Zeit
 const PHRASES = ['Liest deine Nachricht', 'Denkt nach', 'Sortiert die Gedanken', 'Verknüpft, was sie weiß', 'Prüft die Details', 'Formuliert die Antwort'];
 const PHRASES_THINK = ['Denkt nach', 'Wägt Möglichkeiten ab', 'Geht Schritt für Schritt vor', 'Prüft ihre Idee', 'Ordnet die Gedanken', 'Gleich fertig mit Nachdenken'];
-function thinkPhrase(m) {
+function thinkPhrase(m, chat = currentChat()) {
   const secs = (Date.now() - (m?.createdAt || Date.now())) / 1000;
+  // 1) Denkt das Modell sichtbar? Dann den aktuellen Gedanken in Kurzform zeigen
+  if (m?.thinking) {
+    const clean = stripForeign(m.thinking, false).replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim();
+    const parts = clean.split(/(?<=[.!?:])\s+/).filter((x) => x.length > 12);
+    let cur = parts[parts.length - 1] || '';
+    // Der letzte Satz ist oft noch unfertig – dann lieber den davor, wenn der kurz genug ist
+    if (cur.length < 25 && parts.length > 1) cur = parts[parts.length - 2];
+    if (cur.length > 12) return escapeHtml(cur.length > 90 ? `${cur.slice(0, 88).replace(/\s+\S*$/, '')} …` : `${cur.replace(/[.:]$/, '')} …`);
+  }
+  // 2) Gerade etwas erledigt? Dann sagen, womit sie jetzt weitermacht
+  const at = chat?.messages.indexOf(m) ?? -1;
+  for (let k = at - 1; k >= 0; k--) {
+    const x = chat.messages[k];
+    if (x.role === 'user') break;
+    if (x.role !== 'tool' || x.name === 'select_skills') continue;
+    const a = x.args || {};
+    const file = String(x.path || a.path || '').split(/[\\/]/).pop();
+    if (x.name === 'web_search') return x.status === 'error' ? 'Websuche ging nicht – antwortet aus eigenem Wissen …' : `Liest die Ergebnisse zu „${escapeHtml(a.query || '')}“ …`;
+    if (x.name === 'fetch_webpage') return 'Liest die Webseite …';
+    if (x.name === 'search_chats') return 'Sieht sich frühere Nachrichten an …';
+    if (x.name === 'read_file') return `Liest ${escapeHtml(file)} …`;
+    if (x.name === 'list_directory') return `Sieht sich den Ordner ${escapeHtml(file || 'an')} an …`;
+    if (x.name === 'run_command') return x.failedRun || x.status === 'error' ? 'Befehl ging schief – sucht eine Lösung …' : 'Wertet die Terminal-Ausgabe aus …';
+    if (x.name === 'write_file') return `${escapeHtml(file)} gespeichert – macht weiter …`;
+    if (x.name === 'create_folder') return `Ordner ${escapeHtml(file)} angelegt – macht weiter …`;
+    break;
+  }
   if (secs > 45 && Math.floor(secs / 4) % 3 === 0) return 'Große Frage – das dauert etwas';
   const list = m?.thinking ? PHRASES_THINK : PHRASES;
   const i = Math.floor(secs / 3.5);
@@ -952,7 +989,8 @@ function thinkIndicator(label) {
 
 function thinkingHtml(thinking, active) {
   if (!thinking) return '';
-  return `<details class="thinking"${active ? ' open' : ''}><summary>${active ? `<span class="ti-label" style="${shimDelay()}">Denkt nach …</span>` : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
+  // Eingeklappt: Der aktuelle Gedanke steht schon kurz in der Denk-Anzeige
+  return `<details class="thinking"><summary>${active ? `<span class="ti-label" style="${shimDelay()}">Denkt nach …</span>` : 'Gedankengang anzeigen'}</summary><div class="think-body">${escapeHtml(thinking)}</div></details>`;
 }
 
 function statsText(s) {
@@ -1139,7 +1177,7 @@ function patchChildren(parent, html) {
     if (c.nodeType === 1 && n.nodeType === 1 && c.classList.contains('think-ind') && n.classList.contains('think-ind')) {
       const a = c.querySelector('.ti-label');
       const b = n.querySelector('.ti-label');
-      if (a && b && a.textContent !== b.textContent) a.textContent = b.textContent;
+      if (a && b && a.innerHTML !== b.innerHTML) a.innerHTML = b.innerHTML;
       return;
     }
     if (c.nodeType === 1 && n.nodeType === 1 && c.classList.contains('code-block') && n.classList.contains('code-block')) {
@@ -2288,8 +2326,8 @@ setInterval(() => {
   const secs = Math.max(0, Math.round((Date.now() - (m.createdAt || Date.now())) / 1000));
   const text = `${secs} s · ${fmtTokens((chat.usage || 0) + (m.liveTokens || 0))} Tokens im Chat`;
   $$('[data-ti]').forEach((e) => { e.textContent = text; });
-  const phrase = thinkPhrase(m);
-  $$('.think-ind .ti-label').forEach((e) => { if (e.textContent !== phrase) e.textContent = phrase; });
+  const phrase = thinkPhrase(m, chat);
+  $$('.think-ind .ti-label').forEach((e) => { if (e.innerHTML !== phrase) e.innerHTML = phrase; });
 }, 500);
 
 // ---------------------------------------------------------------------------

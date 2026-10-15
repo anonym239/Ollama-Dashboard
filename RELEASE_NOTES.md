@@ -13,6 +13,14 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.0.1
+
+- **Die KI zeigt in Stichworten, was sie gerade tut:**
+  - Beim Nachdenken steht der aktuelle Gedanke als Kurztext da, z. B. „Der Nutzer fragt nach der neuesten RTX Grafikkarte …“.
+  - Nach einer Aktion steht da, womit sie weitermacht, z. B. „Liest die Ergebnisse zu „neueste RTX Grafikkarte 2026“ …“, „Wertet die Terminal-Ausgabe aus …“ oder „Befehl ging schief – sucht eine Lösung …“.
+  - Beim Code-Schreiben läuft live „Schreibt Datei: index.html +46 −0“ bzw. „Ändert Datei: …“ mit den hinzugefügten und gelöschten Zeilen.
+- Der Gedankengang bleibt beim Nachdenken eingeklappt, weil der Kurztext schon das Wichtigste zeigt.
+
 ### Neu in 2.0.0
 
 - **Normale, passende Antworten:** Die KI bekommt nur noch die Anleitung, die zur Nachricht passt. Bei „Hallo, wie geht's?“ antwortet sie kurz und natürlich, ohne Terminal-Regeln und Werkzeuge im Hinterkopf. Computer-Anleitung, Websuche und Erinnerungen kommen nur dazu, wenn du danach fragst.
