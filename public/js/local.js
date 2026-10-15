@@ -26,6 +26,8 @@ export const updates = {
   check: (force = false) => call('/local/update/check' + (force ? '?force=1' : '')),
   install: () => call('/local/update/install', { method: 'POST' }),
   status: () => call('/local/update/status'),
+  result: () => call('/local/update/result'),
+  openSetup: () => call('/local/update/open-setup', { method: 'POST' }),
 };
 
 export const localFs = {

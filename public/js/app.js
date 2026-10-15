@@ -6,7 +6,7 @@ import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, updates } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -157,13 +157,13 @@ const isMobile = () => matchMedia('(max-width: 860px)').matches;
 // ---------------------------------------------------------------------------
 // Kleine UI-Helfer
 // ---------------------------------------------------------------------------
-function toast(text, type = '') {
+function toast(text, type = '', ms = 3200) {
   const t = document.createElement('div');
   t.className = `toast ${type}`;
   t.textContent = text;
   el.toasts.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 3200);
-  setTimeout(() => t.remove(), 3600);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, ms);
+  setTimeout(() => t.remove(), ms + 400);
 }
 
 function openModal({ title, body, foot = '', size = '', onMount }) {
@@ -351,6 +351,10 @@ el.banner.addEventListener('click', async (e) => {
   const action = b.dataset.banner;
   if (action === 'update-install' || action === 'update-retry') startUpdate();
   if (action === 'update-notes') showUpdateNotes();
+  if (action === 'update-open-setup') {
+    // Funktioniert nur, solange der Server läuft – sonst die Download-Seite
+    updates.openSetup().then(() => toast('Setup wird geöffnet …')).catch(() => { if (updateInfo?.url) window.open(updateInfo.url, '_blank', 'noopener'); });
+  }
   if (action === 'update-later') { updateHidden = true; updateState = null; renderBanner(); }
   if (action === 'retry') { b.disabled = true; await checkStatus(); }
   if (action === 'settings') openSettings();
@@ -696,6 +700,7 @@ function messageHtml(m, i, chat, isLastAi) {
   if (m.role === 'tool') return toolHtml(m);
 
   const streaming = busy?.msgId === m.id;
+  if (m.superseded && !streaming) return ''; // "Weiß ich nicht" – wurde nach der Websuche neu beantwortet
   const parts = splitThink(m.content);
   const think = shown(m, parts.think, false);
   const text = shown(m, parts.text);
@@ -739,7 +744,9 @@ async function checkForUpdate({ force = false, quiet = true } = {}) {
   const was = lsGet('od.updating');
   if (was) {
     lsSet('od.updating', null);
+    const res = await updates.result().catch(() => null);
     if (was === updateInfo.current) toast(`Aktualisiert auf v${updateInfo.current}`);
+    else if (res?.result?.phase === 'failed') updateState = { phase: 'error', canOpenSetup: true, error: `Das Setup ist nicht durchgelaufen (Code ${res.result.code}). Du kannst es selbst öffnen – dann siehst du, was los ist.` };
   }
   if (!quiet) toast(updateInfo.newer ? `Neue Version v${updateInfo.latest} verfügbar` : `Du hast die neueste Version (v${updateInfo.current})`);
   if (!quiet && updateInfo.newer) updateHidden = false;
@@ -751,14 +758,22 @@ function updateBannerHtml() {
   const s = updateState;
   if (s?.phase === 'error') {
     return banner('error', 'download', 'Update fehlgeschlagen', escapeHtml(s.error || ''),
-      `<button class="btn btn-sm btn-primary" data-banner="update-retry">${icon('refresh')} Erneut versuchen</button>
+      `${s.canOpenSetup ? `<button class="btn btn-sm btn-primary" data-banner="update-open-setup">${icon('external')} Setup selbst öffnen</button>` : ''}
+       <button class="btn btn-sm ${s.canOpenSetup ? '' : 'btn-primary'}" data-banner="update-retry">${icon('refresh')} Erneut versuchen</button>
        ${updateInfo?.url ? `<a class="btn btn-sm" href="${escapeHtml(updateInfo.url)}" target="_blank" rel="noopener">${icon('external')} Download-Seite</a>` : ''}
        <button class="btn btn-sm" data-banner="update-later">Schließen</button>`);
   }
   if (s) {
-    const text = s.phase === 'download' ? `Wird heruntergeladen … ${s.pct ?? 0} %` : s.phase === 'verify' ? 'Wird geprüft …' : 'Wird installiert – die App startet gleich neu …';
+    const mb = (n) => (n / 1048576).toFixed(1).replace('.', ',');
+    const secs = s.since ? Math.round((Date.now() - s.since) / 1000) : 0;
+    const text = s.phase === 'download' ? `Wird heruntergeladen … ${s.pct ?? 0} %${s.total ? ` (${mb(s.received || 0)} von ${mb(s.total)} MB)` : ''}`
+      : s.phase === 'verify' ? 'Wird geprüft …'
+      : s.phase === 'ready' ? 'Heruntergeladen und geprüft (Testmodus).'
+      : `Wird installiert – ein kleines Setup-Fenster zeigt den Fortschritt.${s.allUsers ? ' Windows fragt nach Administratorrechten: bitte mit „Ja“ bestätigen (evtl. blinkt es unten in der Taskleiste).' : ''} Die App startet danach von selbst neu … ${secs} s`;
+    const late = s.phase === 'restarting' && secs > 75;
     return banner('', s.phase === 'restarting' ? 'loader' : 'download', `Update auf v${escapeHtml(s.version || '')}`, text,
-      `<div style="width:160px">${progressHtml(s.phase === 'download' ? s.pct : null)}</div>`);
+      late ? `<button class="btn btn-sm" data-banner="update-open-setup">${icon('external')} Setup selbst öffnen</button>${updateInfo?.url ? `<a class="btn btn-sm" href="${escapeHtml(updateInfo.url)}" target="_blank" rel="noopener">Download-Seite</a>` : ''}`
+        : `<div style="width:160px">${progressHtml(s.phase === 'download' ? s.pct : null)}</div>`);
   }
   const u = updateInfo;
   if (!u?.newer || updateHidden) return '';
@@ -803,6 +818,7 @@ async function pollUpdate() {
   try { s = await updates.status(); } catch { waitForRestart(); return; }
   if (s.phase === 'error') { lsSet('od.updating', null); updateState = { phase: 'error', error: s.error }; renderBanner(); return; }
   updateState = { ...s, pct: s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : null };
+  if (s.phase === 'ready') { renderBanner(); return; }
   renderBanner();
   if (s.phase === 'restarting') { waitForRestart(); return; }
   setTimeout(pollUpdate, 400);
@@ -810,19 +826,20 @@ async function pollUpdate() {
 
 // Alte App beendet sich, Setup läuft, neue App startet -> Seite neu laden
 async function waitForRestart() {
-  updateState = { ...updateState, phase: 'restarting' };
+  updateState = { ...updateState, phase: 'restarting', since: Date.now() };
   renderBanner();
   clearTimeout(statusTimer);
   let down = false;
-  const until = Date.now() + 5 * 60_000;
+  const until = Date.now() + 7 * 60_000;
   while (Date.now() < until) {
     await sleep(1000);
+    renderBanner(); // Sekunden hochzählen
     try {
       const r = await fetch('/favicon.svg', { cache: 'no-store' });
       if (r.ok && down) { location.reload(); return; }
     } catch { down = true; }
   }
-  updateState = { phase: 'error', error: 'Die neue Version hat sich nicht gemeldet. Starte das Dashboard bitte über das Startmenü.' };
+  updateState = { phase: 'error', error: 'Die App hat sich nach dem Update nicht gemeldet. Starte das Dashboard bitte über das Startmenü. Klappt das nicht, lade das Setup über die Download-Seite.' };
   renderBanner();
 }
 
@@ -840,6 +857,8 @@ function fileBlocks(text) {
   return messageBlocks(text).map((b, idx) => ({ ...b, idx })).filter((b) => {
     if (b.path) return true;
     if (ACTION_BLOCKS.test(b.info.split(/\s+/)[0] || '')) return false;
+    // Text ohne Programmiersprache (z. B. ASCII-Kunst, Ausgaben, Gedichte) bleibt im Chat sichtbar
+    if (!b.lang || /^(text|txt|plain|plaintext|ascii|art|output|log|console|md|markdown|diff)$/i.test(b.lang)) return false;
     return b.code.split('\n').length >= FILE_MIN_LINES;
   });
 }
@@ -901,7 +920,7 @@ function filesCardHtml(chat, m, files, streaming) {
   const shownRows = expanded ? rows : rows.slice(0, 4);
   const cur = streaming ? rows.find((r) => r.b.open) : null;
   return `<div class="files-card" data-msg="${m.id}">
-    <div class="fc-head">${cur ? `<span class="fc-spin">${icon('loader')}</span> ${shim(`${cur.d.isNew ? 'Schreibt' : 'Ändert'} Datei: ${escapeHtml(cur.name)}`)} <span class="fc-add">+${cur.d.added}</span> <span class="fc-del">−${cur.d.removed}</span>` : `${rows.length} ${rows.length === 1 ? 'Datei' : 'Dateien'} ${rows.some((r) => r.b.path) ? 'bearbeitet' : 'mit Code'}`}</div>
+    <div class="fc-head">${cur ? `<span class="fc-spin">${spinIcon()}</span> ${shim(`${cur.d.isNew ? 'Schreibt' : 'Ändert'} Datei: ${escapeHtml(cur.name)}`)} <span class="fc-add">+${cur.d.added}</span> <span class="fc-del">−${cur.d.removed}</span>` : `${rows.length} ${rows.length === 1 ? 'Datei' : 'Dateien'} ${rows.some((r) => r.b.path) ? 'bearbeitet' : 'mit Code'}`}</div>
     ${shownRows.map((r) => `<button type="button" class="fc-row" data-file-idx="${r.b.idx}" title="${escapeHtml(r.b.path || r.name)} – Änderungen anzeigen">
       <span class="fc-ico">${icon('file')}</span><span class="fc-name">${escapeHtml(r.name)}</span>${r.b.open ? '<span class="fc-live">schreibt …</span>' : ''}
       <span class="fc-add">+${r.d.added}</span><span class="fc-del">−${r.d.removed}</span></button>`).join('')}
@@ -939,52 +958,45 @@ function bodyHtml(text, streaming, m) {
 // Schimmer-Text; die Verzögerung hängt an der Uhrzeit, damit der Streifen beim Neuzeichnen nicht von vorne anfängt
 const SHIMMER_MS = 1800;
 const shimDelay = () => `animation-delay:-${Date.now() % SHIMMER_MS}ms`;
+// Drehendes Lade-Symbol, das beim Neuzeichnen nicht von vorne anfängt
+const SPIN_MS = 1200;
+const spinIcon = (name = 'loader') => `<span class="spinner" style="animation-delay:-${Date.now() % SPIN_MS}ms">${icon(name)}</span>`;
 const shim = (html) => `<span class="shimmer" style="${shimDelay()}">${html}</span>`;
 
-// Wechselnde Status-Texte, solange die KI überlegt – richtet sich nach der vergangenen Zeit
-const PHRASES = ['Liest deine Nachricht', 'Denkt nach', 'Sortiert die Gedanken', 'Verknüpft, was sie weiß', 'Prüft die Details', 'Formuliert die Antwort'];
-const PHRASES_THINK = ['Denkt nach', 'Wägt Möglichkeiten ab', 'Geht Schritt für Schritt vor', 'Prüft ihre Idee', 'Ordnet die Gedanken', 'Gleich fertig mit Nachdenken'];
+// Manche Modelle können kaum Deutsch (z. B. deepseek-r1, phi). Einmal pro Modell einen Tipp zeigen.
+const WEAK_GERMAN = /^(deepseek-r1|deepseek-coder|phi|tinyllama|smollm|codellama|starcoder|qwen2?\.?5?-coder:(0\.5|1\.5)b)/i;
+function germanTip(chat) {
+  const model = chat?.model || '';
+  const lastUser = [...(chat?.messages || [])].reverse().find((m) => m.role === 'user');
+  if (!WEAK_GERMAN.test(model) || detectLanguage(lastUser?.content) !== 'de' || lsGet(`od.tip.${model}`)) return;
+  lsSet(`od.tip.${model}`, '1');
+  toast(`Tipp: ${model} kann nur mäßig Deutsch. Für natürlicheres Deutsch eignen sich z. B. qwen2.5:7b, gemma3:4b oder llama3.1:8b (unter „Modelle“ laden).`, '', 12000);
+}
+
+// Kurzer Stichpunkt, was die KI gerade macht – nichts Ausführliches
 function thinkPhrase(m, chat = currentChat()) {
-  const secs = (Date.now() - (m?.createdAt || Date.now())) / 1000;
-  // 1) Denkt das Modell sichtbar? Dann den aktuellen Gedanken in Kurzform zeigen
-  if (m?.thinking) {
-    const clean = stripForeign(m.thinking, false).replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim();
-    const parts = clean.split(/(?<=[.!?:])\s+/).filter((x) => x.length > 12);
-    let cur = parts[parts.length - 1] || '';
-    // Der letzte Satz ist oft noch unfertig – dann lieber den davor, wenn der kurz genug ist
-    if (cur.length < 25 && parts.length > 1) cur = parts[parts.length - 2];
-    if (cur.length > 12) return escapeHtml(cur.length > 90 ? `${cur.slice(0, 88).replace(/\s+\S*$/, '')} …` : `${cur.replace(/[.:]$/, '')} …`);
-  }
-  // 2) Gerade etwas erledigt? Dann sagen, womit sie jetzt weitermacht
   const at = chat?.messages.indexOf(m) ?? -1;
   for (let k = at - 1; k >= 0; k--) {
     const x = chat.messages[k];
     if (x.role === 'user') break;
     if (x.role !== 'tool' || x.name === 'select_skills') continue;
-    const a = x.args || {};
-    const file = String(x.path || a.path || '').split(/[\\/]/).pop();
-    if (x.name === 'web_search') return x.status === 'error' ? 'Websuche ging nicht – antwortet aus eigenem Wissen …' : `Liest die Ergebnisse zu „${escapeHtml(a.query || '')}“ …`;
-    if (x.name === 'fetch_webpage') return 'Liest die Webseite …';
-    if (x.name === 'search_chats') return 'Sieht sich frühere Nachrichten an …';
-    if (x.name === 'read_file') return `Liest ${escapeHtml(file)} …`;
-    if (x.name === 'list_directory') return `Sieht sich den Ordner ${escapeHtml(file || 'an')} an …`;
-    if (x.name === 'run_command') return x.failedRun || x.status === 'error' ? 'Befehl ging schief – sucht eine Lösung …' : 'Wertet die Terminal-Ausgabe aus …';
-    if (x.name === 'write_file') return `${escapeHtml(file)} gespeichert – macht weiter …`;
-    if (x.name === 'create_folder') return `Ordner ${escapeHtml(file)} angelegt – macht weiter …`;
+    if (x.name === 'web_search') return x.status === 'error' ? 'Denkt nach' : 'Liest Suchergebnisse';
+    if (x.name === 'fetch_webpage') return 'Liest Webseite';
+    if (x.name === 'search_chats') return 'Erinnert sich';
+    if (x.name === 'read_file') return 'Liest Datei';
+    if (x.name === 'list_directory') return 'Sieht sich den Ordner an';
+    if (x.name === 'run_command') return x.failedRun || x.status === 'error' ? 'Sucht eine Lösung' : 'Wertet Ausgabe aus';
     break;
   }
-  if (secs > 45 && Math.floor(secs / 4) % 3 === 0) return 'Große Frage – das dauert etwas';
-  const list = m?.thinking ? PHRASES_THINK : PHRASES;
-  const i = Math.floor(secs / 3.5);
-  return `${i < list.length ? list[i] : list[1 + ((i - 1) % (list.length - 1))]} …`;
+  return m?.thinking ? 'Denkt nach' : 'Überlegt';
 }
 
+// Klassische Denk-Animation: Kugeln im Kreis – am Ende jeder Runde springt eine unten heraus und hüpft links wieder hinein
 function thinkIndicator(label) {
-  const bars = Array.from({ length: 18 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
-  return `<div class="think-ind" role="status"><span class="ti-orb" aria-hidden="true"><span class="o-glow"></span><span class="o-blob"></span>`
-    + '<span class="o-core"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span><i class="o-p1"></i><i class="o-p2"></i></span>'
-    + `<span class="ti-main"><span class="ti-top"><span class="ti-label" style="${shimDelay()}">${label}</span><span class="ti-meta" data-ti></span></span>`
-    + `<span class="ti-wave" aria-hidden="true">${bars}</span></span></div>`;
+  const dots = Array.from({ length: 8 }, (_, i) => `<i style="--i:${i}"></i>`).join('');
+  const sync = `animation-delay:-${Date.now() % 2400}ms`;
+  return `<div class="think-ind" role="status"><span class="ti-spin" aria-hidden="true"><span class="ti-dots" style="${sync}">${dots}</span><b class="ti-hop" style="${sync}"></b></span>`
+    + `<span class="ti-label" style="${shimDelay()}">${label}</span><span class="ti-meta" data-ti></span></div>`;
 }
 
 function thinkingHtml(thinking, active) {
@@ -1068,7 +1080,7 @@ function toolHtml(t) {
   if (t.name === 'search_chats' || t.name === 'remember') {
     const running = t.status === 'running';
     const label = t.name === 'remember' ? `Gemerkt: ${escapeHtml(t.args?.fact || '')}` : `In früheren Chats nachgesehen${t.hits != null ? ` · ${t.hits} ${t.hits === 1 ? 'Stelle' : 'Stellen'}` : ''}`;
-    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : t.name === 'remember' ? 'save' : 'search')} ${running ? shim('Erinnere mich …') : label}</span></div>`;
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${running ? spinIcon() : icon(t.name === 'remember' ? 'save' : 'search')} ${running ? shim('Erinnere mich …') : label}</span></div>`;
   }
   // Gespeicherte Dateien: nur eine kleine Zeile (die Karte "Dateien bearbeitet" zeigt schon alles)
   if (t.name === 'write_file' && t.status === 'done') {
@@ -1079,7 +1091,7 @@ function toolHtml(t) {
   if (t.name === 'web_search' || t.name === 'fetch_webpage') {
     const running = t.status === 'running';
     const label = t.name === 'web_search' ? `Im Web recherchiert: „${escapeHtml(t.args?.query || '')}“` : `Webseite gelesen`;
-    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${icon(running ? 'loader' : 'globe')}
+    return `<div class="msg tool" id="m-${t.id}" data-id="${t.id}"><span class="research ${running ? 'running' : ''}">${running ? spinIcon() : icon('globe')}
       ${running ? shim(`Recherchiere im Web${t.args?.query ? `: „${escapeHtml(t.args.query)}“` : ' …'}`) : t.status === 'error' ? 'Websuche nicht möglich' : label}</span></div>`;
   }
   let body = '';
@@ -1544,6 +1556,8 @@ function stop() {
 }
 
 const MAX_COMMANDS = 5;
+// Antworten, in denen die KI selbst sagt, dass sie es nicht (sicher) weiß
+const UNSURE = /(ich weiß (es )?nicht|weiß ich nicht|nicht sicher|keine (aktuellen |genauen )?informationen|habe keine (aktuellen )?(infos|informationen|daten)|mein(em)? wissensstand|kann ich nicht (genau )?sagen|nicht bekannt|i don'?t know|not sure|as of my (last )?(knowledge|training))/i;
 const INFO_ONLY_TOOLS = new Set(['web_search', 'fetch_webpage', 'search_chats', 'remember', 'remember_text', 'select_skills']);
 const INFO_TOOLS = new Set(['web_search', 'fetch_webpage', 'run_command', 'read_file', 'list_directory', 'list_models', 'running_models']);
 
@@ -1612,6 +1626,7 @@ async function generate(chat) {
     updateComposer();
   }
   if (isFirst && settings.autoTitle) makeTitle(chat);
+  germanTip(chat);
 }
 
 async function generateRound(chat, signal, turn = { done: new Set() }) {
@@ -1653,7 +1668,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       if (m.images?.length) { if (vision) o.images = m.images; else droppedImages = true; }
       messages.push(o);
     } else if (m.role === 'assistant') {
-      if (m.error && !m.content) continue;
+      if ((m.error && !m.content) || m.superseded) continue;
       const o = { role: 'assistant', content: splitThink(m.content).text };
       if (useTools && m.tool_calls?.length) o.tool_calls = m.tool_calls;
       else if (m.tool_calls?.length && !o.content) continue;
@@ -1804,7 +1819,18 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   // Schon ausgeführte Aktionen nicht wiederholen
   const key = (a) => `${a.name}:${JSON.stringify(a.args || {})}`;
   actions = actions.filter((a) => !turn.done.has(key(a)));
-  if (!actions.length) return false;
+  if (!actions.length) {
+    // Die KI weiß es nicht sicher? Dann kurz selbst im Web nachsehen und sie noch einmal antworten lassen
+    const answer = splitThink(msg.content).text;
+    if (webOn && !turn.autoSearched && !toolCalls.length && UNSURE.test(answer) && lastUser?.content && !signal.aborted) {
+      turn.autoSearched = true;
+      msg.superseded = true;
+      const act = { name: 'web_search', args: { query: makeQuery(lastUser.content) } };
+      turn.done.add(key(act));
+      if (await runAction(chat, act, signal)) return true;
+    }
+    return false;
+  }
 
   let gotInfo = false;
   let anyRan = false;
@@ -1833,6 +1859,16 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     }
     const ran = await runAction(chat, act, signal);
     if (ran) { anyRan = true; if (INFO_TOOLS.has(act.name)) gotInfo = true; }
+    // Befehl ging schief? Dann sucht die App selbst gleich den richtigen Befehl im Web (einmal pro Antwort)
+    const last = chat.messages[chat.messages.length - 1];
+    if (act.name === 'run_command' && last?.failedRun && webOn && !turn.cmdSearched && !signal.aborted) {
+      turn.cmdSearched = true;
+      const goal = makeQuery(lastUser?.content || '').replace(/\b(20\d{2}|terminal|cmd|konsole|befehl\w*|zeig\w*|kaputt)\b/gi, '').replace(/\s+/g, ' ').trim();
+      const q = `${sysInfo?.platform === 'win32' ? 'Windows CMD' : 'Linux Terminal'} Befehl ${goal || String(act.args?.command || '').split(' ')[0]}`;
+      const sAct = { name: 'web_search', args: { query: q } };
+      turn.done.add(key(sAct));
+      if (await runAction(chat, sAct, signal)) gotInfo = true;
+    }
   }
   // Native Tools: immer weiter (KI reagiert auf Ergebnisse). Text-Aktionen: nur wenn neue Infos da sind.
   // Nach übernommenem Code darf die KI weitermachen (z. B. die Datei öffnen)

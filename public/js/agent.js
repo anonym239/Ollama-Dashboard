@@ -106,7 +106,8 @@ export function systemPrompt({ assistant, sys, nativeTools, agent, webSearch, mo
 
 So antwortest du:
 - Beantworte genau die Frage, die gestellt wurde – direkt, verständlich, ohne Umschweife. Bleib beim Thema.
-- Smalltalk wie „Hallo, wie geht es dir?“ beantwortest du kurz, natürlich und freundlich (1–2 Sätze) und fragst, wobei du helfen kannst.
+- Smalltalk beantwortest du kurz, natürlich und freundlich (1–2 Sätze). Beispiel: „Hallo, wie geht es dir?“ → „Hallo! Mir geht es gut, danke der Nachfrage. Wobei kann ich dir helfen?“
+- Schreibe korrektes, natürliches Deutsch wie ein Muttersprachler: richtige Fälle („ich danke dir“, nicht „dich“), keine englischen Einschübe wie „by the way“, keine wörtlichen Übersetzungen. Lieber kurze, klare Sätze.
 - Bei Wissensfragen: zuerst die Antwort, dann nur so viel Erklärung wie nötig.
 - Erfinde nichts. Weißt du etwas nicht sicher (z. B. Neuigkeiten nach deinem Wissensstand), sag das ehrlich.
 - Antworte immer in der Sprache des Nutzers (meist Deutsch) – nie mit chinesischen oder anderen fremden Schriftzeichen.
@@ -542,7 +543,7 @@ export async function executeTool(name, args = {}, { progress = () => {}, signal
       let help = '';
       if (r.code !== 0 && !r.running) {
         const unknown = /(nicht als interner oder externer befehl|is not recognized as an internal or external command|command not found|wird nicht erkannt|befehl nicht gefunden)/i.test(text);
-        const goal = makeQuery(question).replace(/\b20\d{2}\b/, '').trim();
+        const goal = makeQuery(question).replace(/\b(20\d{2}|terminal|cmd|konsole|befehl\w*)\b/gi, '').replace(/\s+/g, ' ').trim();
         help = `\n\nDer Befehl hat NICHT funktioniert.${unknown ? ' Diesen Befehl gibt es so nicht.' : ''} Rate nicht weiter und wiederhole ihn nicht.`
           + (webSearch ? ` Suche im Internet nach dem richtigen Befehl:\n\`\`\`suche\n${sys === 'win32' ? 'Windows CMD' : 'Terminal'} Befehl ${goal || command.split(' ')[0]}\n\`\`\`\noder schreibe einen anderen, korrigierten Befehl.` : ' Schreibe einen anderen, korrigierten Befehl.');
       }

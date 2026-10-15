@@ -37,6 +37,7 @@ async function test(name, fn) {
   await test('rm -rf wird übersetzt', () => assert.strictEqual(fix('rm -rf alt'), 'rmdir /s /q alt'));
   await test('start wird von der Ausgabe abgekoppelt', () => assert.strictEqual(fix('start notepad && echo ok'), 'start notepad >nul 2>&1 && echo ok'));
   await test('"öffne ein CMD" nutzt das vorhandene KI-Terminal', () => assert.match(fix('start cmd /k'), /^echo /));
+  await test('PowerShell-Befehle laufen über powershell', () => assert.strictEqual(fix('Get-CimInstance Win32_VideoController | Select-Object Name'), 'powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object Name"'));
   await test('"cat" in Texten bleibt', () => assert.strictEqual(fix('echo concat category'), 'echo concat category'));
 
   console.log('\nWebsuche & Vorschau');
@@ -109,10 +110,29 @@ async function test(name, fn) {
       await new Promise((ok) => spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { stdio: 'ignore' }).on('exit', ok));
       for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'started.txt')); i++) await new Promise((r) => setTimeout(r, 250));
       const args = fs.readFileSync(path.join(dir, 'setup-args.txt'), 'utf8');
-      assert.match(args, /\/VERYSILENT/);
+      assert.match(args, /\/SILENT/);
       assert.match(args, /\/LOG="/);
       assert.strictEqual(fs.readFileSync(path.join(dir, 'started.txt'), 'utf8').trim(), 'neu=--nach-update');
       assert.ok(!fs.existsSync(setupFile), 'Setup wurde nicht aufgeräumt');
+      const st = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8').replace(/^\ufeff/, ''));
+      assert.strictEqual(st.phase, 'done', JSON.stringify(st));
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+    await test('Update-Skript: Setup schlägt fehl -> Status "failed", alte App startet wieder', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-upd-'));
+      const setupFile = path.join(dir, 'Setup.cmd');
+      const exe = path.join(dir, 'App.cmd');
+      fs.writeFileSync(setupFile, '@exit /b 5\r\n');
+      fs.writeFileSync(exe, `@echo neu=%1> "${path.join(dir, 'started.txt')}"\r\n`);
+      const dummy = spawn('cmd.exe', ['/c', 'ping -n 2 127.0.0.1 >nul'], { stdio: 'ignore' });
+      const script = path.join(dir, 'update.ps1');
+      fs.writeFileSync(script, '\ufeff' + srv.updaterScript({ setupFile, exe, pid: dummy.pid, log: path.join(dir, 'setup.log'), version: '9.9.9' }), 'utf8');
+      await new Promise((ok) => spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { stdio: 'ignore' }).on('exit', ok));
+      for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'started.txt')); i++) await new Promise((r) => setTimeout(r, 250));
+      const st = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8').replace(/^\ufeff/, ''));
+      assert.deepStrictEqual([st.phase, st.code, st.version], ['failed', 5, '9.9.9']);
+      assert.ok(fs.existsSync(path.join(dir, 'started.txt')), 'App wurde nicht wieder gestartet');
+      assert.ok(fs.existsSync(setupFile), 'Setup sollte zum manuellen Öffnen bleiben');
       fs.rmSync(dir, { recursive: true, force: true });
     });
   }

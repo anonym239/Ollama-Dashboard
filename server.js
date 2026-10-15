@@ -771,6 +771,11 @@ function fixWindowsCommand(cmd, desk, home) {
   if (/^\s*(start\s+(""\s+)?)?(cmd|cmd\.exe|powershell|powershell\.exe|pwsh|wt)(\s+\/[kc])?\s*$/i.test(s)) {
     return 'echo Das KI-Terminal ist schon offen - Befehle laufen direkt hier.';
   }
+  // PowerShell-Befehle (Get-Process, Select-Object …) gibt es in cmd nicht -> in PowerShell ausführen
+  if (/^\s*(\$\w+\s*=|(Get|Set|New|Remove|Select|Where|ForEach|Sort|Format|Measure|Start|Stop|Test|Invoke|Out|Write|Read|Clear|Copy|Move|Rename|Resolve|Split|Join|Import|Export|ConvertTo|ConvertFrom|Add|Enable|Disable|Restart|Update|Install|Uninstall|Find|Show|Wait|Expand|Compress)-[A-Za-z]\w*)/.test(s)
+    && !/^\s*powershell/i.test(s)) {
+    return `powershell -NoProfile -Command "${s.trim().replace(/"/g, '\\"')}"`;
+  }
   // Linux-Befehle, die kleine Modelle gern schreiben, in cmd-Befehle übersetzen
   const seg = '(^|&&|\\|\\||&|\\|)(\\s*)';
   const tr = (re, fn) => { s = s.replace(new RegExp(seg + re, 'gi'), (m, a, b, ...rest) => a + b + fn(...rest)); };
@@ -1001,9 +1006,13 @@ async function terminalRun(original, { timeout = 120_000 } = {}) {
 
 // ---------- Updates: neue Version auf GitHub finden, herunterladen, prüfen, installieren, neu starten ----------
 const UPDATE_REPO = 'anonym239/Ollama-Dashboard';
-const APP_VERSION = (() => {
+const APP_VERSION = process.env.OD_FAKE_VERSION || (() => {
   try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0'; } catch { return '0.0.0'; }
 })();
+// Nur für Tests: alles außer dem eigentlichen Installieren durchspielen
+const UPDATE_DRYRUN = !!process.env.OD_UPDATE_DRYRUN;
+const UPDATE_DIR = path.join(require('os').tmpdir(), 'ollama-dashboard-update');
+const UPDATE_STATUS = path.join(UPDATE_DIR, 'status.json');
 const IS_PACKAGED = (() => { try { return require('node:sea').isSea(); } catch { return false; } })();
 let updateCache = null;
 let updateJob = { phase: 'idle' };
@@ -1032,7 +1041,7 @@ const isProgramFiles = (p) => [process.env.ProgramFiles, process.env['ProgramFil
   .filter(Boolean).some((d) => String(p).toLowerCase().startsWith(d.toLowerCase() + '\\'));
 
 // Automatisch installieren geht nur mit der installierten Windows-Version (Setup)
-const canSelfUpdate = () => IS_WIN && IS_PACKAGED && fs.existsSync(path.join(path.dirname(process.execPath), 'unins000.exe'));
+const canSelfUpdate = () => UPDATE_DRYRUN || (IS_WIN && IS_PACKAGED && fs.existsSync(path.join(path.dirname(process.execPath), 'unins000.exe')));
 
 async function checkUpdate(force = false) {
   if (!force && updateCache && Date.now() - updateCache.at < 30 * 60_000) return updateCache.data;
@@ -1061,33 +1070,60 @@ async function downloadTo(url, file, onProgress) {
   const hash = crypto.createHash('sha256');
   const out = fs.createWriteStream(file);
   let received = 0;
+  const reader = r.body.getReader();
   try {
-    for await (const chunk of r.body) {
-      hash.update(chunk);
-      received += chunk.length;
+    for (;;) {
+      // Kommen 30 Sekunden lang keine Daten, hängt der Download -> abbrechen statt ewig zu warten
+      let timer;
+      const stall = new Promise((_, no) => { timer = setTimeout(() => no(new Error('Der Download hängt (30 s keine Daten). Prüfe die Internetverbindung.')), 30_000); });
+      const { done, value } = await Promise.race([reader.read(), stall]).finally(() => clearTimeout(timer));
+      if (done) break;
+      hash.update(value);
+      received += value.length;
       onProgress(received);
-      if (!out.write(chunk)) await new Promise((ok) => out.once('drain', ok));
+      if (!out.write(value)) await new Promise((ok) => out.once('drain', ok));
     }
+  } catch (e) {
+    reader.cancel().catch(() => {});
+    throw e;
   } finally {
     await new Promise((ok) => out.end(ok));
   }
   return hash.digest('hex');
 }
 
-// Kleines PowerShell-Skript: wartet, bis die App beendet ist, installiert still und startet die neue Version
-function updaterScript({ setupFile, exe, pid, log, allUsers = false }) {
+// Kleines PowerShell-Skript: wartet, bis die App beendet ist, installiert und startet die App neu.
+// Schreibt jeden Schritt in status.json – so sieht die neue (oder alte) App, was passiert ist.
+// /SILENT zeigt ein kleines Fortschrittsfenster (keine Fragen); nach 5 Minuten wird abgebrochen.
+function updaterScript({ setupFile, exe, pid, log, allUsers = false, status = path.win32.join(path.win32.dirname(setupFile), 'status.json'), version = '' }) {
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
   const dir = path.win32.dirname(exe);
+  const st = (phase, extra = '') => `Set-Content -LiteralPath ${q(status)} -Encoding UTF8 -Value ('{"phase":"${phase}","version":"${version}","at":' + [DateTimeOffset]::Now.ToUnixTimeMilliseconds() + '${extra}}')`;
   return [
     '$ErrorActionPreference = "SilentlyContinue"',
+    st('waiting'),
     `Wait-Process -Id ${pid} -Timeout 30`,
+    `Stop-Process -Id ${pid} -Force`,
     'Start-Sleep -Milliseconds 500',
-    `$p = Start-Process -FilePath ${q(setupFile)} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/NOCANCEL','/SP-','${allUsers ? '/ALLUSERS' : '/CURRENTUSER'}',${q(`/LOG="${log}"`)} -Wait -PassThru`,
-    // Merker als Start-Parameter (Umgebungsvariablen kommen über Start-Process nicht zuverlässig an)
+    st('installing'),
+    `$p = Start-Process -FilePath ${q(setupFile)} -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/NOCANCEL','/SP-','${allUsers ? '/ALLUSERS' : '/CURRENTUSER'}',${q(`/LOG="${log}"`)} -PassThru`,
+    '$code = -1',
+    'if ($p) { if ($p.WaitForExit(300000)) { $code = $p.ExitCode } else { Stop-Process -Id $p.Id -Force; $code = -2 } }',
+    `if ($code -eq 0) { ${st('done')} } else { ${st('failed', `,"code":' + $code + '`)} }`,
+    // Neue Version starten – oder bei einem Fehler die alte wieder, damit das Dashboard nicht einfach weg ist
     `Start-Process -FilePath ${q(exe)} -ArgumentList '--nach-update' -WorkingDirectory ${q(dir)}`,
-    `Remove-Item -LiteralPath ${q(setupFile)} -Force`,
+    `if ($code -eq 0) { Remove-Item -LiteralPath ${q(setupFile)} -Force }`,
     'Remove-Item -LiteralPath $PSCommandPath -Force',
   ].join('\r\n');
+}
+
+// Was hat das letzte Update gemacht? (wird nach dem Neustart angezeigt)
+function lastUpdateResult() {
+  try {
+    const j = JSON.parse(fs.readFileSync(UPDATE_STATUS, 'utf8').replace(/^﻿/, ''));
+    if (Date.now() - j.at > 30 * 60_000) return null;
+    return j;
+  } catch { return null; }
 }
 
 async function installUpdate() {
@@ -1096,10 +1132,11 @@ async function installUpdate() {
   if (!info.newer) throw new Error('Du hast schon die neueste Version.');
   if (!info.canInstall) throw new Error('Automatische Updates gehen nur mit der installierten Windows-Version (Setup).');
   const { setup, sums } = updateCache;
-  updateJob = { phase: 'download', version: info.latest, received: 0, total: setup.size };
+  updateJob = { phase: 'download', version: info.latest, received: 0, total: setup.size, allUsers: isProgramFiles(process.execPath) };
   (async () => {
-    const dir = path.join(require('os').tmpdir(), 'ollama-dashboard-update');
+    const dir = UPDATE_DIR;
     fs.mkdirSync(dir, { recursive: true });
+    fs.rmSync(UPDATE_STATUS, { force: true });
     const setupFile = path.join(dir, setup.name);
     const sumsText = await (await fetch(sums.browser_download_url, { headers: { 'User-Agent': 'Ollama-Dashboard' }, signal: AbortSignal.timeout(30_000) })).text();
     const expected = sumsText.split(/\r?\n/).map((l) => l.trim().split(/\s+/)).find((x) => x[1] === setup.name)?.[0]?.toLowerCase();
@@ -1107,8 +1144,9 @@ async function installUpdate() {
     const got = await downloadTo(setup.browser_download_url, setupFile, (n) => { updateJob.received = n; });
     updateJob.phase = 'verify';
     if (got !== expected) { fs.rmSync(setupFile, { force: true }); throw new Error('Prüfsumme stimmt nicht – Update abgebrochen.'); }
+    if (UPDATE_DRYRUN) { updateJob.phase = 'ready'; return; }
     const script = path.join(dir, 'update.ps1');
-    fs.writeFileSync(script, '﻿' + updaterScript({ setupFile, exe: process.execPath, pid: process.pid, log: path.join(dir, 'setup.log'), allUsers: isProgramFiles(process.execPath) }), 'utf8');
+    fs.writeFileSync(script, '﻿' + updaterScript({ setupFile, exe: process.execPath, pid: process.pid, log: path.join(dir, 'setup.log'), allUsers: isProgramFiles(process.execPath), status: UPDATE_STATUS, version: info.latest }), 'utf8');
     spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script], {
       detached: true, stdio: 'ignore', windowsHide: true,
     }).unref();
@@ -1144,6 +1182,16 @@ async function handleLocal(req, res) {
     }
     if (route === '/local/update/status' && req.method === 'GET') {
       return json(res, 200, updateJob);
+    }
+    if (route === '/local/update/result' && req.method === 'GET') {
+      return json(res, 200, { current: APP_VERSION, result: lastUpdateResult(), log: UPDATE_DIR });
+    }
+    if (route === '/local/update/open-setup' && req.method === 'POST') {
+      // Notlösung: das heruntergeladene Setup normal (mit Fenster) öffnen
+      const f = fs.existsSync(UPDATE_DIR) && fs.readdirSync(UPDATE_DIR).find((x) => /^OllamaDashboard-Setup-.*\.exe$/i.test(x));
+      if (!f) return json(res, 404, { error: 'Kein heruntergeladenes Setup gefunden.' });
+      spawn(IS_WIN ? `start "" "${path.join(UPDATE_DIR, f)}"` : 'true', { shell: true, detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
+      return json(res, 200, { ok: true });
     }
     if (route === '/local/ollama/start' && req.method === 'POST') {
       try {

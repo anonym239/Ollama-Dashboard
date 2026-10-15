@@ -13,6 +13,23 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.0.2
+
+- **Update per Klick repariert:** Das Setup lief bisher unsichtbar im Hintergrund. Wartete Windows z. B. auf eine Bestätigung, hing das Update endlos. Jetzt:
+  - Ein kleines Setup-Fenster zeigt den Fortschritt.
+  - Nach spätestens 5 Minuten wird abgebrochen, und die App startet auf jeden Fall wieder.
+  - Der Download zeigt MB an und bricht ab, wenn 30 Sekunden keine Daten kommen.
+  - Nach dem Neustart siehst du, ob das Update geklappt hat. Wenn nicht, öffnet „Setup selbst öffnen“ das heruntergeladene Setup.
+- **Klassische Denk-Animation ist zurück:** Kugeln im Kreis. Neu: Am Ende jeder Runde springt eine Kugel unten heraus und hüpft links wieder hinein. Dazu kurze Stichworte wie „Denkt nach“, „Liest Suchergebnisse“ oder „Wertet Ausgabe aus“.
+- **Lade-Symbole drehen sich durchgehend**, statt bei jedem neuen Textstück neu anzufangen.
+- Text ohne Programmiersprache (z. B. ASCII-Kunst) bleibt im Chat sichtbar und wird nicht als „Code.txt“ eingepackt.
+- **Die KI schaut selbst im Web nach:**
+  - Schlägt ein Befehl fehl, sucht die App sofort nach dem richtigen Befehl.
+  - Sagt die KI „weiß ich nicht“ oder „nicht sicher“, sucht die App kurz, und die KI antwortet mit den echten Infos.
+  - Alles wird für offline gespeichert.
+- PowerShell-Befehle (z. B. `Get-CimInstance`, `Select-Object`) laufen jetzt automatisch über PowerShell statt im CMD zu scheitern.
+- **Besseres Deutsch:** klare Regeln und ein Beispiel für natürliche Antworten. Bei Modellen, die kaum Deutsch können (z. B. deepseek-r1), gibt es einmal einen Tipp für bessere Modelle.
+
 ### Neu in 2.0.1
 
 - **Die KI zeigt in Stichworten, was sie gerade tut:**
