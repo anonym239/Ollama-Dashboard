@@ -13,6 +13,10 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.2.2
+
+- **„Tools geladen“:** Bekommt die KI Werkzeuge, steht unter ihrem Namen z. B. „8 Tools geladen · Mehr anzeigen“. Ein Klick zeigt die Liste (Websuche, Terminal, Dateien speichern …), „Weniger anzeigen“ klappt sie wieder zu. Ohne Werkzeuge, z. B. bei „Hallo“, steht dort nichts.
+
 ### Neu in 2.2.1
 
 - **Einfache Nachrichten werden sofort beantwortet:** Bei „Hallo“, „ok egal“, „danke“ oder kurzen Fragen denkt die KI nicht mehr lange nach und bekommt keine Werkzeuge oder Zusatz-Anleitungen. Die Antwort kommt in Sekunden.

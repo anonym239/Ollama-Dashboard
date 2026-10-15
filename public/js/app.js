@@ -703,6 +703,7 @@ function messageHtml(m, i, chat, isLastAi) {
   return `<div class="msg ai ${isLastAi ? 'last' : ''}" id="m-${m.id}" data-id="${m.id}">${avatarHtml(a, 'msg-avatar')}
     <div class="msg-main">
       <div class="msg-name">${escapeHtml(a.name)} <span class="model-tag">${escapeHtml(m.model || '')}</span>${streaming ? '<span class="model-tag live-meta" data-ti></span>' : ''}</div>
+      ${toolsLineHtml(m)}
       <div class="msg-body">${thinkingHtml(thinking, streaming && !text)}<div class="md">${bodyHtml(text, streaming, m)}</div></div>
       ${sources.length ? sourcesHtml(sources) : ''}
       ${!streaming && m.content ? linkPreviewsHtml(m.content, sources) : ''}
@@ -963,6 +964,30 @@ function germanTip(chat) {
   if (!WEAK_GERMAN.test(model) || detectLanguage(lastUser?.content) !== 'de' || lsGet(`od.tip.${model}`)) return;
   lsSet(`od.tip.${model}`, '1');
   toast(`Tipp: ${model} kann nur mäßig Deutsch. Für natürlicheres Deutsch eignen sich z. B. qwen2.5:7b, gemma3:4b oder llama3.1:8b (unter „Modelle“ laden).`, '', 12000);
+}
+
+// ---------- Anzeige "N Tools geladen" unter dem Namen (nur Anzeige, ändert nichts an der KI) ----------
+const TOOL_NAMES = {
+  web_search: 'Websuche', fetch_webpage: 'Webseiten lesen', search_chats: 'Frühere Chats durchsuchen', remember: 'Gedächtnis',
+  write_file: 'Dateien speichern', create_folder: 'Ordner anlegen', read_file: 'Dateien lesen', list_directory: 'Ordner ansehen',
+  open_path: 'Dateien öffnen', run_command: 'Terminal (CMD)', open_terminal: 'Terminal-Fenster', list_models: 'Modelle anzeigen',
+  running_models: 'Aktive Modelle', pull_model: 'Modelle herunterladen', delete_model: 'Modelle löschen', load_model: 'Modelle starten',
+  unload_model: 'Modelle stoppen', start_ollama: 'Ollama starten', stop_ollama: 'Ollama beenden',
+};
+const TEXT_TOOLS = { computer: ['create_folder', 'write_file', 'read_file', 'list_directory', 'run_command', 'pull_model', 'load_model', 'start_ollama'], web: ['web_search'], recall: ['search_chats'], remember: ['remember'] };
+function loadedTools(tools, intent, { agent, web }) {
+  // Modelle mit Werkzeugen: die mitgeschickten Werkzeuge. Sonst: was die KI per Textblock nutzen darf.
+  const names = tools?.length ? tools.map((t) => t.function.name)
+    : [...(agent && intent.computer ? TEXT_TOOLS.computer : []), ...(web && intent.web ? TEXT_TOOLS.web : []), ...(intent.recall ? TEXT_TOOLS.recall : []), ...(intent.remember ? TEXT_TOOLS.remember : [])];
+  return [...new Set(names.map((n) => TOOL_NAMES[n] || n))];
+}
+const toolsOpen = new Set();
+function toolsLineHtml(m) {
+  const list = m.toolsLoaded || [];
+  if (!list.length) return '';
+  const open = toolsOpen.has(m.id);
+  return `<div class="tools-line"><button type="button" class="tools-toggle" data-tools-toggle="${m.id}">${icon('zap')}<span>${list.length} ${list.length === 1 ? 'Tool' : 'Tools'} geladen</span><span class="tt-more">${open ? 'Weniger anzeigen' : 'Mehr anzeigen'}</span></button>`
+    + (open ? `<div class="tools-list">${list.map((n) => `<span class="tool-chip">${escapeHtml(n)}</span>`).join('')}</div>` : '') + '</div>';
 }
 
 // Kurzer Stichpunkt, was die KI gerade macht – nichts Ausführliches
@@ -1253,6 +1278,14 @@ function scrollToBottom(force = false) {
 }
 
 // Klicks in Nachrichten
+el.inner.addEventListener('click', (e) => {
+  const tt = e.target.closest('[data-tools-toggle]');
+  if (!tt) return;
+  const id = tt.dataset.toolsToggle;
+  if (toolsOpen.has(id)) toolsOpen.delete(id); else toolsOpen.add(id);
+  const m = currentChat()?.messages.find((x) => x.id === id);
+  if (m) updateMessageEl(m);
+});
 el.inner.addEventListener('click', async (e) => {
   const sug = e.target.closest('[data-suggest]');
   if (sug) { el.input.value = sug.dataset.suggest; autoGrow(); el.input.focus(); return; }
@@ -1714,7 +1747,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
     toast(`${model} kann keine Bilder sehen – nimm z. B. gemma3 oder llava.`, 'error');
   }
 
-  const msg = { id: uid(), role: 'assistant', lang: /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/.test(lastUser?.content || '') ? 'other' : 'de', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now() };
+  const msg = { id: uid(), role: 'assistant', lang: /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/.test(lastUser?.content || '') ? 'other' : 'de', content: '', thinking: '', assistantId: assistant.id, model, createdAt: Date.now(), toolsLoaded: loadedTools(tools, pIntent, { agent: agentOn, web: webOn }) };
   chat.messages.push(msg);
   busy.msgId = msg.id;
   if (currentChatId === chat.id) { renderMessages(); scrollToBottom(); }

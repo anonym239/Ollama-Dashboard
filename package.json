@@ -1,6 +1,6 @@
 {
   "name": "ollama-dashboard",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Modernes, komplett lokales KI-Chat-Dashboard für Ollama – mit Agent-Modus, Websuche, Dateien und Sprachausgabe.",
   "main": "server.js",
   "bin": {
