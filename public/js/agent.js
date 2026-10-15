@@ -66,7 +66,7 @@ export function needsApproval(name, autoApprove) {
 
 // Was will der Nutzer? Danach richtet sich, wie viel Anleitung die KI bekommt.
 // Kleine Modelle werden mit langen Prompts deutlich schlechter – bei "Hallo, wie geht's?" bekommen sie deshalb fast nichts.
-const COMPUTER_INTENT = /(ordner|datei|dateien|desktop|schreibtisch|terminal|\bcmd\b|konsole|eingabeaufforderung|befehl|powershell|batch|\.bat\b|öffne|öffnen|starte\b|starten|installier|deinstallier|lösch|erstell|anleg|speicher|programmier|skript|script|projekt|ausführ|führ\S* (das |es |den |die )?\S* ?aus|auf meinem (pc|computer|rechner|laptop)|mein(em|en)? (pc|computer|rechner|laptop|system)|festplatte|speicherplatz|arbeitsspeicher|ip-?adresse|meine ip\b|ipconfig|ping\b|prozess|taskmanager|meine grafikkarte|welche grafikkarte (hab|habe)|systeminfo|ollama|modell(e)? (laden|herunterladen|löschen|entladen|starten|stoppen)|lade \S+ herunter|\b(pull|herunterladen)\b|\.(txt|html?|css|js|py|json|md|csv|bat|cmd|ps1)\b|code (für|in|schreiben)|schreib\S* (mir )?(ein|einen|eine) (code|programm|spiel|webseite|website|app))/i;
+const COMPUTER_INTENT = /(ordner|datei|dateien|desktop|schreibtisch|terminal|\bcmd\b|konsole|eingabeaufforderung|befehl|powershell|batch|\.bat\b|öffne|öffnen|starte\b|starten|installier|deinstallier|lösch|erstell|anleg|speicher|programmier|skript|script|projekt|ausführ(?!lich)|führ\S* (das |es |den |die )?\S* ?aus|auf meinem (pc|computer|rechner|laptop)|mein(em|en)? (pc|computer|rechner|laptop|system)|festplatte|speicherplatz|arbeitsspeicher|ip-?adresse|meine ip\b|ipconfig|ping\b|prozess|taskmanager|meine grafikkarte|welche grafikkarte (hab|habe)|systeminfo|ollama|modell(e)? (laden|herunterladen|löschen|entladen|starten|stoppen)|lade \S+ herunter|\b(pull|herunterladen)\b|\.(txt|html?|css|js|py|json|md|csv|bat|cmd|ps1)\b|code (für|in|schreiben)|schreib\S* (mir )?(ein|einen|eine) (code|programm|spiel|webseite|website|app))/i;
 export function needsComputer(text) {
   return COMPUTER_INTENT.test(String(text || ''));
 }
@@ -354,7 +354,7 @@ export function intentHints(text, { newTopic = false } = {}) {
 
 // Will der Nutzer, dass etwas ausgeführt wird? (Dann zählen auch ```cmd/```bash-Blöcke als Befehl)
 export function wantsExecution(text) {
-  return /(führ|ausführ|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));
+  return /(führ(?!lich)|ausführ(?!lich)|starte|start |öffne|öffnen|mach |erstell|anleg|lösch|install|terminal|cmd|konsole|befehl|run\b|execute|open\b|create|zeig mir|check|prüf|teste)/i.test(String(text || ''));
 }
 
 const SHELL_LANGS = new Set(['cmd', 'bat', 'batch', 'powershell', 'ps1', 'pwsh', 'bash', 'sh', 'shell', 'zsh', 'console']);
@@ -663,7 +663,7 @@ export const commandKey = (c) => String(c || '').toLowerCase().replace(/\s+/g, '
 
 // ---------- "Führ das aus" – Code aus der vorigen Antwort direkt ausführen ----------
 // Kleine Modelle schreiben den Code dann meist neu oder weigern sich. Die App erledigt das selbst.
-const RUN_VERB = /\b(führ\w*|ausführ\w*|ausf(ü|ue)hren|run|starte?n?|teste?n?|probier\w*)\b/i;
+const RUN_VERB = /\b(führ(?!lich)\w*|ausführ(?!lich)\w*|ausf(ü|ue)hren|run|starte?n?|teste?n?|probier\w*)\b/i;
 const RUN_OBJ = /\b(befehl\w*|kommando\w*|code|skript|script|programm|das|es|ihn|sie|davon|oben)\b/i;
 export function wantsRunPrevious(text) {
   const t = String(text || '');
@@ -766,4 +766,15 @@ export function extractFacts(text) {
     if (m) out.push({ key: key || make(m).toLowerCase(), fact: make(m) });
   }
   return out;
+}
+
+// ---------- Einfache Nachrichten: sofort antworten, ohne Nachdenken und Werkzeuge ----------
+// "Hallo", "ok egal", "danke", "ja", kurze Fragen – dafür braucht kein Modell einen Gedanken-Roman.
+const THINK_WANTED = /(denk\S* (genau |gründlich |gut )?nach|überleg|schritt für schritt|step by step|beweis|berechne|rechne|löse|analysier|vergleiche ausführlich|warum genau)/i;
+export function isSimpleMessage(text, { files = 0, images = 0 } = {}) {
+  const t = String(text || '').trim();
+  if (!t || files || images || /```/.test(t) || THINK_WANTED.test(t)) return false;
+  if (needsComputer(t) || needsWeb(t)) return false;
+  const words = t.split(/\s+/).length;
+  return words <= 6 || (SMALLTALK.test(t) && words <= 14);
 }

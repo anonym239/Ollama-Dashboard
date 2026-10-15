@@ -7,7 +7,7 @@ import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, updates, catalog } from './local.js';
 import { CATALOG, CATEGORIES, recommend, budget, sizeOf } from './catalog.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, extractFacts, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, DRIFTING_MODEL, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, extractFacts, isSimpleMessage, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, DRIFTING_MODEL, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -1650,8 +1650,11 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const recentComputer = !lastUser?.topicStart && recent.some((m) => (m.role === 'tool' && !INFO_ONLY_TOOLS.has(m.name))
     || (m.role === 'assistant' && /```(befehl|ordner|lesen|liste|ollama|datei:)/.test(m.content || '')));
   const webResults = recent.some((m) => m.role === 'tool' && (m.name === 'web_search' || m.name === 'fetch_webpage'));
-  const pIntent = promptIntent(lastUser?.content, { recentComputer, web: webOn && (webResults || needsWeb(lastUser?.content)) });
-  const tools = !useTools ? null : TOOL_DEFS.filter((t) => {
+  // Einfache Nachricht ("ok egal", "Hallo")? Dann ohne Werkzeuge, Anleitungen und Nachdenken – sofort antworten
+  const simple = isSimpleMessage(lastUser?.content, { files: lastUser?.files?.length, images: lastUser?.images?.length }) && !lastUser?.ranPrevious;
+  const pIntent = simple ? { computer: false, web: false, remember: false, recall: false }
+    : promptIntent(lastUser?.content, { recentComputer, web: webOn && (webResults || needsWeb(lastUser?.content)) });
+  const tools = !useTools || simple ? null : TOOL_DEFS.filter((t) => {
     const n = t.function.name;
     if (n === 'web_search' || n === 'fetch_webpage') return webOn;
     if (n === 'search_chats') return pIntent.recall;
@@ -1720,7 +1723,8 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
   const body = { model, messages, keep_alive: '30m', options: { temperature: Number(assistant.temperature ?? 0.7), repeat_penalty: 1.15, repeat_last_n: 256 } };
   if (Number(assistant.numCtx) > 0) body.options.num_ctx = Number(assistant.numCtx);
   if (tools?.length) body.tools = tools;
-  if (settings.think && caps?.includes('thinking') && !noThink.has(model)) body.think = true;
+  // Nachdenken ausdrücklich an- oder ausschalten (Modelle wie deepseek-r1 denken sonst IMMER – auch bei "ok")
+  if (caps?.includes('thinking') && !noThink.has(model)) body.think = !!settings.think && !simple;
 
   const auto = settings.tts.auto && speaker.supported;
   if (auto) speaker.beginStream(msg.id);

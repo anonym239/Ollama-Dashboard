@@ -13,6 +13,13 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.2.1
+
+- **Einfache Nachrichten werden sofort beantwortet:** Bei „Hallo“, „ok egal“, „danke“ oder kurzen Fragen denkt die KI nicht mehr lange nach und bekommt keine Werkzeuge oder Zusatz-Anleitungen. Die Antwort kommt in Sekunden.
+- Nachgedacht wird nur bei echten Aufgaben oder wenn du darum bittest („denk nach“, „Schritt für Schritt“, „berechne“).
+- Die Einstellung „Nachdenken erlauben“ schaltet das Nachdenken jetzt wirklich aus. Modelle wie deepseek-r1 haben vorher trotzdem immer nachgedacht.
+- „Erkläre mir ausführlich …“ wird nicht mehr als „ausführen“ verstanden.
+
 ### Neu in 2.2.0
 
 - **Passende Modelle für deinen PC:** Unter „Modelle → Für dich“ liest die App nach deiner Zustimmung Arbeitsspeicher, Grafikkarte samt Grafikspeicher, Prozessor und freien Speicherplatz aus. Die Daten bleiben auf deinem PC. Danach empfiehlt sie das beste Modell für jeden Bereich, mit Begründung:
