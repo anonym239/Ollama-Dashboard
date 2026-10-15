@@ -13,6 +13,15 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.0.5
+
+- **Anzahl wird beachtet:** „Führ eins davon aus“, „einen zufälligen“, „zwei davon“ oder „alle“ führt genau so viele Befehle aus.
+  - Bei „den Befehl“ ist es einer.
+  - Zufällig gewählt werden lieber Befehle ohne (womöglich erfundene) Pfade.
+  - Linux-Befehle wie `free` oder `journalctl` und Befehle ohne Angaben (z. B. ein nacktes `copy`) werden unter Windows übersprungen.
+- **Keine Wiederholungen:** Die KI schreibt Listen und Antworten, die schon im Chat stehen, nicht noch einmal. Nach dem Ausführen erklärt sie nur kurz das Ergebnis.
+- **„Zeig mir 3 Sachen“** liefert genau 3 Sachen.
+
 ### Neu in 2.0.4
 
 - **Klassischer Lade-Kreis:** Wenn die KI überlegt, dreht sich jetzt ein schlichter Ring mit farbigem Bogen statt der vielen Punkte.

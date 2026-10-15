@@ -109,6 +109,8 @@ So antwortest du:
 - Smalltalk beantwortest du kurz, natürlich und freundlich (1–2 Sätze). Beispiel: „Hallo, wie geht es dir?“ → „Hallo! Mir geht es gut, danke der Nachfrage. Wobei kann ich dir helfen?“
 - Schreibe korrektes, natürliches Deutsch wie ein Muttersprachler: richtige Fälle („ich danke dir“, nicht „dich“), keine englischen Einschübe wie „by the way“, keine wörtlichen Übersetzungen. Lieber kurze, klare Sätze.
 - Bei Wissensfragen: zuerst die Antwort, dann nur so viel Erklärung wie nötig.
+- Wiederhole keine Listen, Antworten oder Codes, die schon im Chat stehen – außer der Nutzer bittet ausdrücklich darum. Beziehe dich lieber kurz darauf („Befehl 3 von oben …“).
+- Will der Nutzer eine bestimmte Anzahl („zeig mir 3 Befehle“, „nur eins“), gib genau so viele – nicht mehr.
 - Erfinde nichts. Weißt du etwas nicht sicher (z. B. Neuigkeiten nach deinem Wissensstand), sag das ehrlich.
 - Antworte immer in der Sprache des Nutzers (meist Deutsch) – nie mit chinesischen oder anderen fremden Schriftzeichen.
 - Markdown nur, wo es hilft (Listen, Code in Codeblöcken).`);
@@ -349,6 +351,8 @@ export function topicShift(text, windowTexts, olderTexts) {
 export function intentHints(text, { newTopic = false } = {}) {
   const t = String(text || '');
   const hints = [];
+  const want = wantedCount(t);
+  if (want && Number.isFinite(want.n)) hints.push(`Der Nutzer möchte genau ${want.n === 1 ? 'eine Sache' : `${want.n} Sachen`}${want.random ? ' (frei gewählt)' : ''} – nicht mehr. Wiederhole keine Liste von vorher.`);
   if (newTopic) hints.push('Das ist eine NEUE, eigenständige Frage. Beantworte sie allgemein und für sich – beziehe sie NICHT auf vorherige Themen.');
   if (/\b(merk|merke|merken|behalt|vergiss nicht|speicher dir|notier dir)\b/i.test(t)) {
     hints.push('Der Nutzer möchte, dass du dir etwas merkst: Schreibe einen ```merken```-Block mit 1–3 kurzen Sätzen (das Wichtigste, worauf er sich bezieht) und bestätige in einem Satz. Wiederhole NICHT deine vorige Antwort.');
@@ -681,11 +685,41 @@ const PS_BLOCK = /^(powershell|ps1|pwsh)$/i;
 const looksLikeCommands = (code) => code.split('\n').filter((l) => l.trim()).length <= 15
   && code.split('\n').every((l) => !l.trim() || /^[@\w.\\/:"%$~-][^{};<>]*$/.test(l.trim()) || /\|/.test(l));
 
-// Welche Aktionen führen den Code aus? blocks: [{ lang, path, code }]
-export function runActionsFor(blocks, platform = 'win32') {
+// Wie viele will der Nutzer? "eins", "zwei davon", "einen zufälligen", "alle" -> { n, random }
+const NUMS = { ein: 1, eins: 1, eine: 1, einen: 1, einem: 1, einer: 1, einzigen: 1, zwei: 2, drei: 3, vier: 4, fünf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10 };
+export function wantedCount(text) {
+  const t = String(text || '').toLowerCase();
+  const random = /zufällig|irgendein|egal welch|random|such\S* (dir )?(eins|einen|eine|was) (davon )?aus/.test(t);
+  if (/\b(alle|jeden|jede|sämtliche)\b/.test(t) && !random) return { n: Infinity, random: false };
+  const m = t.match(/\b(\d{1,2}|eins|einen?|einem|einer|einzigen|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)\b(?=\s*(davon|befehl|befehle|sache|sachen|beispiel|beispiele|tipp|tipps|idee|ideen|punkt|punkte|code|codes|skript|ding|dinge|zufällig|aus\b|\S*\s+(davon|befehl|sache|code|zufällig)))/);
+  if (m) return { n: /\d/.test(m[1]) ? Number(m[1]) : NUMS[m[1]] || 1, random };
+  if (random) return { n: 1, random: true };
+  // Einzahl ("den Befehl", "diesen Code") -> nur einer
+  if (/\b(den|diesen|dieses|das) (befehl|code|kommando)\b/.test(t) && !/\b(befehle|codes|kommandos)\b/.test(t)) return { n: 1, random: false };
+  return null;
+}
+
+// Befehle, die es unter Windows nicht gibt oder die ohne Angaben nichts tun
+const LINUX_ONLY = /^(free|journalctl|sudo|apt|apt-get|yum|dnf|pacman|top|htop|uname|lsb_release|lsblk|df|du|chmod|chown|systemctl|service|ifconfig|man|nano|vim?)\b/i;
+const NEEDS_ARGS = /^(copy|move|ren|rename|del|erase|xcopy|robocopy|mkdir|md|rmdir|rd|cd|type|start)$/i;
+
+// Welche Aktionen führen den Code aus? blocks: [{ lang, path, code }], want: { n, random }
+export function runActionsFor(blocks, platform = 'win32', want = null) {
   const win = platform === 'win32';
   const acts = [];
-  const shellBlocks = blocks.filter((b) => !b.path && (SHELL_BLOCK.test(b.lang) || (!b.lang && looksLikeCommands(b.code))));
+  let shellBlocks = blocks.filter((b) => !b.path && (SHELL_BLOCK.test(b.lang) || (!b.lang && looksLikeCommands(b.code))))
+    .filter((b) => {
+      const first = b.code.trim().split('\n')[0].trim();
+      return first && !(win && LINUX_ONLY.test(first)) && !NEEDS_ARGS.test(first);
+    });
+  if (want && shellBlocks.length > want.n) {
+    if (want.random) {
+      // Zufällig, aber lieber Befehle ohne (womöglich erfundene) Pfade wie C:\Mein\Projekt
+      const noPath = shellBlocks.filter((b) => !/[a-z]:\\|\\\w|\/\w/i.test(b.code));
+      shellBlocks = [...(noPath.length >= want.n ? noPath : shellBlocks)].sort(() => Math.random() - 0.5);
+    }
+    shellBlocks = shellBlocks.slice(0, want.n);
+  }
   if (shellBlocks.length) {
     for (const b of shellBlocks) {
       const lines = b.code.split('\n').map((l) => l.trim()).filter((l) => l && !/^(#|rem\s|::)/i.test(l))

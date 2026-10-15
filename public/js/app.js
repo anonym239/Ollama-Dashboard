@@ -6,7 +6,7 @@ import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
 import { local, localFs, web, updates } from './local.js';
-import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
+import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
 // Icons (Lucide-Stil)
@@ -1605,7 +1605,7 @@ async function generate(chat) {
         const blocks = messageBlocks(splitThink(prevAi.content).text)
           .filter((b) => !b.open && !/^(suche|search|erinnern|merken|ordner|folder|lesen|liste|ollama)$/i.test(b.lang))
           .map((b) => ({ lang: b.lang, path: b.path, code: resolveCodeRef(b.code, b.path || `x.${b.lang}`, collectCodeBlocks(chat.messages)) ?? b.code }));
-        const acts = runActionsFor(blocks, sysInfo?.platform || 'win32');
+        const acts = runActionsFor(blocks, sysInfo?.platform || 'win32', wantedCount(lastUser.content));
         turn.cmds = turn.cmds || new Map();
         for (const act of acts) {
           if (controller.signal.aborted) break;
@@ -1708,7 +1708,7 @@ async function generateRound(chat, signal, turn = { done: new Set() }) {
       const reminder = translate
         ? '\n\n(Die Übersetzung selbst in der gewünschten Zielsprache, deine Erklärungen auf Deutsch – keine chinesischen Schriftzeichen, außer Chinesisch ist die Zielsprache.)'
         : LANGUAGE_REMINDER[detectLanguage(lastUser?.content)];
-      const ranHint = lastUser?.ranPrevious ? '\n\n(Die App hat den Code aus deiner vorigen Antwort gerade selbst ausgeführt – das echte Ergebnis steht oben. Schreibe den Code NICHT noch einmal und führe ihn nicht erneut aus. Erkläre dem Nutzer kurz und verständlich, was herausgekommen ist. Gab es einen Fehler, schlage eine Lösung vor.)' : '';
+      const ranHint = lastUser?.ranPrevious ? '\n\n(Die App hat den Code aus deiner vorigen Antwort gerade selbst ausgeführt – das echte Ergebnis steht oben. Schreibe den Code NICHT noch einmal, führe ihn nicht erneut aus und wiederhole KEINE Liste von vorher. Erkläre in 2–4 Sätzen, was der ausgeführte Befehl gemacht hat und was herausgekommen ist. Gab es einen Fehler, schlage eine Lösung vor.)' : '';
       const savedHint = lastUser?.remembered?.length ? `\n\n(Die App hat das bereits dauerhaft gespeichert: ${lastUser.remembered.join(', ')}. Schreibe KEINEN merken-Block. Bestätige kurz und fasse das Gemerkte in 2–3 Sätzen zusammen.)` : '';
       messages[k] = { ...messages[k], content: messages[k].content + ranHint + (savedHint || intentHints(lastUser?.content, { newTopic: !!lastUser?.topicStart })) + reminder };
       break;
