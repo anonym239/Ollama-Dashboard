@@ -13,6 +13,21 @@ Dein modernes KI-Chat-Dashboard für **lokale KIs mit Ollama**: komplett offline
 > Voraussetzung ist [Ollama](https://ollama.com/download). Fehlt es, hilft dir die App beim Installieren und Starten.
 > Windows SmartScreen kann bei unsignierten Programmen warnen: Klicke dann auf **„Weitere Informationen“** und danach auf **„Trotzdem ausführen“**.
 
+### Neu in 2.2.0
+
+- **Passende Modelle für deinen PC:** Unter „Modelle → Für dich“ liest die App nach deiner Zustimmung Arbeitsspeicher, Grafikkarte samt Grafikspeicher, Prozessor und freien Speicherplatz aus. Die Daten bleiben auf deinem PC. Danach empfiehlt sie das beste Modell für jeden Bereich, mit Begründung:
+  - Allround
+  - Gutes Deutsch
+  - Programmieren
+  - Nachdenken
+  - Bilder verstehen
+  - Agent & Werkzeuge
+  - Schnell & klein
+- **Alle Modelle sehen und laden:** „Alle Modelle“ zeigt die komplette Ollama-Bibliothek mit Suche, Fähigkeiten und allen Größen, ein Klick lädt sie herunter. Mit deinen Systemdaten steht bei jeder Größe, ob sie passt, langsam läuft oder zu groß ist.
+- **Hugging Face:** GGUF-Modelle von Hugging Face durchsuchen und direkt über Ollama laden.
+- Ohne Internet zeigt die App eine eingebaute Liste bewährter Modelle.
+- Vor dem Laden eines viel zu großen Modells fragt die App nach.
+
 ### Neu in 2.1.1
 
 Enthält alle Neuerungen von 2.1.0 (deren Veröffentlichung hing an einem fehlerhaften Test im Build):

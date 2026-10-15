@@ -1040,6 +1040,103 @@ async function terminalRun(original, { timeout = 120_000 } = {}) {
   return { code: 0, stdout: readText(`${base}.out`) + '\n[Der Befehl läuft im Terminal-Fenster weiter (z. B. ein Server oder ein offenes Programm). Bisherige Ausgabe siehe oben.]', stderr: '', visible: true, command, running: true };
 }
 
+// ---------- Systemdaten (nur nach Zustimmung im Dashboard) für Modell-Empfehlungen ----------
+const INTEGRATED_GPU = /(intel|uhd|iris|radeon\(tm\) graphics|radeon graphics|vega \d+ graphics|microsoft basic|virtual|vmware|parsec|citrix|hyper-v)/i;
+async function systemSpecs() {
+  const os = require('os');
+  const GB = 1024 ** 3;
+  const specs = {
+    platform: process.platform, arch: process.arch,
+    cpu: (os.cpus()[0]?.model || '').replace(/\s+/g, ' ').trim(), cores: os.cpus().length,
+    ramGB: +(os.totalmem() / GB).toFixed(1), ramFreeGB: +(os.freemem() / GB).toFixed(1),
+    gpus: [], diskFreeGB: null, appleSilicon: process.platform === 'darwin' && process.arch === 'arm64',
+  };
+  try {
+    const st = fs.statfsSync(process.env.OLLAMA_MODELS || os.homedir());
+    specs.diskFreeGB = +((st.bavail * st.bsize) / GB).toFixed(1);
+  } catch { /* unbekannt */ }
+  // NVIDIA: genaue Angabe über nvidia-smi
+  const nv = await run('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits', { timeout: 8000 });
+  if (nv.code === 0) {
+    for (const line of nv.stdout.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const [name, mib] = line.split(',').map((x) => x.trim());
+      specs.gpus.push({ name, vramGB: +(Number(mib) / 1024).toFixed(1), dedicated: true });
+    }
+  }
+  if (!specs.gpus.length && IS_WIN) {
+    // Alle Grafikkarten mit echtem Grafikspeicher (64-Bit-Wert aus der Registry; WMI kann nur bis 4 GB)
+    const ps = await run('powershell -NoProfile -Command "Get-ItemProperty \'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*\' -ErrorAction SilentlyContinue | Where-Object { $_.DriverDesc } | ForEach-Object { $m = $_.\'HardwareInformation.qwMemorySize\'; if (-not $m) { $m = $_.\'HardwareInformation.MemorySize\' }; if ($m -is [byte[]]) { $m = [BitConverter]::ToUInt32($m, 0) }; $_.DriverDesc + \'|\' + $m }"', { timeout: 15000 });
+    for (const line of ps.stdout.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const [name, bytes] = line.split('|');
+      const vram = Number(bytes) / GB;
+      specs.gpus.push({ name, vramGB: Number.isFinite(vram) ? +vram.toFixed(1) : 0, dedicated: !INTEGRATED_GPU.test(name) && vram >= 1.5 });
+    }
+  } else if (!specs.gpus.length && process.platform === 'linux') {
+    const l = await run('lspci 2>/dev/null | grep -iE "vga|3d controller"', { timeout: 5000 });
+    for (const line of l.stdout.split('\n').filter(Boolean)) {
+      const name = line.replace(/^.*?:\s*/, '').replace(/^.*?:\s*/, '');
+      specs.gpus.push({ name, vramGB: 0, dedicated: /nvidia|radeon rx|amd.*navi/i.test(name) });
+    }
+  } else if (!specs.gpus.length && process.platform === 'darwin') {
+    specs.gpus.push({ name: specs.appleSilicon ? 'Apple Silicon (gemeinsamer Speicher)' : 'Mac-Grafik', vramGB: 0, dedicated: false });
+  }
+  if (process.platform === 'darwin') {
+    const c = await run('sysctl -n machdep.cpu.brand_string', { timeout: 3000 });
+    if (c.code === 0 && c.stdout.trim()) specs.cpu = c.stdout.trim();
+  }
+  return specs;
+}
+
+// ---------- Modell-Kataloge: Ollama-Bibliothek & Hugging Face (GGUF – lädt Ollama direkt mit hf.co/…) ----------
+const catalogCache = new Map();
+async function cached(key, fn, ms = 15 * 60_000) {
+  const hit = catalogCache.get(key);
+  if (hit && Date.now() - hit.at < ms) return hit.data;
+  const data = await fn();
+  catalogCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
+function parseOllamaLibrary(html) {
+  const out = [];
+  const strip = (x) => decodeEntities(String(x || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+  const parts = html.split(/<li[^>]*x-test-model[^>]*>/).slice(1);
+  for (const part of parts) {
+    const name = (part.match(/x-test-search-response-title[^>]*>([^<]+)</) || part.match(/href="\/library\/([\w.:-]+)"/) || [])[1];
+    if (!name) continue;
+    const desc = strip((part.match(/<p[^>]*class="[^"]*(?:max-w-lg|break-words)[^"]*"[^>]*>([\s\S]*?)<\/p>/) || [])[1]);
+    const caps = [...part.matchAll(/x-test-capability[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+    const sizes = [...part.matchAll(/x-test-size[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+    const pulls = strip((part.match(/x-test-pull-count[^>]*>([^<]+)</) || [])[1]);
+    const updated = strip((part.match(/x-test-updated[^>]*>([^<]+)</) || [])[1]);
+    out.push({ name: name.trim(), desc, caps, sizes, pulls, updated, source: 'ollama' });
+  }
+  if (!out.length) {
+    // Ersatz, falls sich das Seitenlayout ändert: wenigstens die Namen
+    for (const m of html.matchAll(/href="\/library\/([\w.-]+)"/g)) if (!out.some((x) => x.name === m[1])) out.push({ name: m[1], desc: '', caps: [], sizes: [], source: 'ollama' });
+  }
+  return out;
+}
+
+async function ollamaLibrary(q = '') {
+  return cached(`ollama:${q}`, async () => {
+    const url = q ? `https://ollama.com/search?q=${encodeURIComponent(q)}` : 'https://ollama.com/library?sort=popular';
+    const { text } = await fetchText(url, { timeout: 15_000 });
+    return parseOllamaLibrary(text);
+  });
+}
+
+async function hfModels(q = '') {
+  return cached(`hf:${q}`, async () => {
+    const url = `https://huggingface.co/api/models?filter=gguf&sort=downloads&direction=-1&limit=40${q ? `&search=${encodeURIComponent(q)}` : ''}`;
+    const { text } = await fetchText(url, { timeout: 15_000, headers: { Accept: 'application/json' } });
+    return JSON.parse(text).map((m) => ({
+      name: `hf.co/${m.id}`, id: m.id, downloads: m.downloads || 0, likes: m.likes || 0,
+      task: m.pipeline_tag || '', updated: m.lastModified || m.createdAt || '', source: 'hf',
+    }));
+  });
+}
+
 // ---------- Updates: neue Version auf GitHub finden, herunterladen, prüfen, installieren, neu starten ----------
 const UPDATE_REPO = 'anonym239/Ollama-Dashboard';
 const APP_VERSION = process.env.OD_FAKE_VERSION || (() => {
@@ -1181,6 +1278,15 @@ async function handleLocal(req, res) {
         shell: IS_WIN ? 'cmd.exe' : (process.env.SHELL || '/bin/sh'),
       });
     }
+    if (route === '/local/system/specs' && req.method === 'GET') {
+      return json(res, 200, await systemSpecs());
+    }
+    if (route === '/local/catalog/ollama' && req.method === 'GET') {
+      try { return json(res, 200, { models: await ollamaLibrary(new URL(req.url, 'http://x').searchParams.get('q') || '') }); } catch (e) { return json(res, 502, { error: `Ollama-Bibliothek nicht erreichbar: ${netReason(e)}` }); }
+    }
+    if (route === '/local/catalog/hf' && req.method === 'GET') {
+      try { return json(res, 200, { models: await hfModels(new URL(req.url, 'http://x').searchParams.get('q') || '') }); } catch (e) { return json(res, 502, { error: `Hugging Face nicht erreichbar: ${netReason(e)}` }); }
+    }
     if (route === '/local/update/check' && req.method === 'GET') {
       return json(res, 200, await checkUpdate(new URL(req.url, 'http://x').searchParams.has('force')));
     }
@@ -1294,7 +1400,7 @@ const server = http.createServer((req, res) => {
 });
 
 // Für Tests: Funktionen ohne laufenden Server nutzbar machen
-module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, keyTerms, anchorTerms, strongTerms, scoreResult, startOllama, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, APP_VERSION };
+module.exports = { ytInitialData, ytCollect, pageMeta, wantsYouTube, keyTerms, anchorTerms, strongTerms, scoreResult, startOllama, bestPassages, fixWindowsCommand, prepareCommand, terminalRun, termAlive, desktopDir, resolvePath, fsAction, TERM_DIR, PS_TERMINAL, SH_TERMINAL, webSearch, newerVersion, notesSince, APP_VERSION, systemSpecs, parseOllamaLibrary };
 
 if (!process.env.OD_NO_LISTEN) {
 process.title = 'Ollama Dashboard';

@@ -22,6 +22,12 @@ export const local = {
   openTerminal: () => call('/local/terminal/open', { method: 'POST' }),
 };
 
+export const catalog = {
+  specs: () => call('/local/system/specs'),
+  ollama: (q = '') => call('/local/catalog/ollama?q=' + encodeURIComponent(q)),
+  hf: (q = '') => call('/local/catalog/hf?q=' + encodeURIComponent(q)),
+};
+
 export const updates = {
   check: (force = false) => call('/local/update/check' + (force ? '?force=1' : '')),
   install: () => call('/local/update/install', { method: 'POST' }),

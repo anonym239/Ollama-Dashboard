@@ -68,6 +68,19 @@ async function test(name, fn) {
     assert.ok(srv.scoreResult({ title: 'NVIDIA GeForce RTX 5090', snippet: 'Die neue Grafikkarte', url: 'https://www.nvidia.com/de-de/geforce/' }, t, a, st) >= 0.75);
   });
 
+  await test('Ollama-Bibliothek wird gelesen', () => {
+    const html = '<ul><li x-test-model class="flex"><a href="/library/qwen3"><div x-test-model-title title="qwen3"><h2><span x-test-search-response-title>qwen3</span></h2>'
+      + '<p class="max-w-lg break-words text-neutral-800 text-md">Qwen3 &amp; more</p></div><div><span x-test-capability class="x">tools</span><span x-test-size class="x">8b</span><span x-test-size>14b</span></div>'
+      + '<p><span x-test-pull-count>12.3M</span> Pulls <span x-test-updated>2 weeks ago</span></p></a></li></ul>';
+    const [m] = srv.parseOllamaLibrary(html);
+    assert.deepStrictEqual([m.name, m.desc, m.caps, m.sizes, m.pulls], ['qwen3', 'Qwen3 & more', ['tools'], ['8b', '14b'], '12.3M']);
+    assert.strictEqual(srv.parseOllamaLibrary('<a href="/library/gemma3">x</a>')[0].name, 'gemma3');
+  });
+  await test('Systemdaten werden gelesen', async () => {
+    const sp = await srv.systemSpecs();
+    assert.ok(sp.ramGB > 0 && sp.cores > 0, JSON.stringify(sp));
+  });
+
   console.log('\nDateizugriff');
   const desk = await srv.desktopDir();
   fs.mkdirSync(desk, { recursive: true });

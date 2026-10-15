@@ -5,7 +5,8 @@ import { renderMarkdown, escapeHtml } from './markdown.js';
 import { Speaker, Dictation } from './tts.js';
 import { readAttachment, formatBytes, buildContent } from './files.js';
 import { diffLines, diffStats, foldDiff } from './diff.js';
-import { local, localFs, web, updates } from './local.js';
+import { local, localFs, web, updates, catalog } from './local.js';
+import { CATALOG, CATEGORIES, recommend, budget, sizeOf } from './catalog.js';
 import { TOOL_DEFS, TOOL_META, needsApproval, systemPrompt, parseTextActions, executeTool, findStopBlock, wantsExecution, promptIntent, findRepetition, commandKey, makeQuery, wantsRunPrevious, runActionsFor, wantedCount, extractFacts, collectCodeBlocks, resolveCodeRef, wantsReuse, detectRewrite, detectLanguage, LANGUAGE_REMINDER, DRIFTING_MODEL, stripForeign, needsWeb, webQuery, topicShift, intentHints } from './agent.js';
 
 // ---------------------------------------------------------------------------
@@ -89,16 +90,6 @@ const TEMPLATES = [
   { name: 'Recherche', color: '#6366f1', temperature: 0.3, systemPrompt: 'Du bist ein gründlicher Rechercheur. Suche bei Faktenfragen im Internet, vergleiche Quellen und fasse die Ergebnisse klar strukturiert mit Quellenangaben zusammen.' },
 ];
 
-const RECOMMENDED = [
-  { name: 'llama3.2', size: 'ca. 2 GB', desc: 'Schnell & gut für den Alltag' },
-  { name: 'qwen2.5:3b', size: 'ca. 1,9 GB', desc: 'Klein, stark als Agent (Tools)' },
-  { name: 'qwen3:4b', size: 'ca. 2,6 GB', desc: 'Denkt nach, kann Tools' },
-  { name: 'gemma3:4b', size: 'ca. 3,3 GB', desc: 'Kann Bilder verstehen' },
-  { name: 'qwen2.5-coder:7b', size: 'ca. 4,7 GB', desc: 'Spezialist fürs Programmieren' },
-  { name: 'llama3.1:8b', size: 'ca. 4,9 GB', desc: 'Starker Allrounder' },
-  { name: 'deepseek-r1:7b', size: 'ca. 4,7 GB', desc: 'Logik & Nachdenken' },
-  { name: 'llama3.2:1b', size: 'ca. 1,3 GB', desc: 'Winzig, für schwache PCs' },
-];
 
 const SEARCH_ENGINES = {
   google: { label: 'Google (Standard, ohne Key)' },
@@ -2448,6 +2439,157 @@ speaker.onstate = (speaking, id) => {
 // ---------------------------------------------------------------------------
 // Dialog: Modelle
 // ---------------------------------------------------------------------------
+// ---------- Modelle: Für dich (passend zum PC) · Alle Modelle (Ollama & Hugging Face) · Installiert ----------
+let modelsTab = 'foryou';
+const catState = { source: 'ollama', q: '', items: null, error: '', loading: false, loaded: false, timer: null };
+const fmtGB = (n) => `${String(Math.round(n * 10) / 10).replace('.', ',')} GB`;
+const fmtCount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1).replace('.', ',')} Mio.` : n >= 1e3 ? `${Math.round(n / 1e3)} Tsd.` : String(n));
+const CAP_LABEL = { vision: 'Bilder', tools: 'Werkzeuge', thinking: 'Denkt nach', embedding: 'Embedding', audio: 'Audio' };
+const capBadges = (caps = []) => caps.filter((c) => CAP_LABEL[c]).map((c) => `<span class="badge">${CAP_LABEL[c]}</span>`).join(' ');
+
+function specsSummary(sp) {
+  const b = budget(sp);
+  const gpu = (sp.gpus || []).filter((g) => g.dedicated).sort((x, y) => y.vramGB - x.vramGB)[0];
+  return [
+    sp.appleSilicon ? `Apple Silicon · ${fmtGB(sp.ramGB)} gemeinsamer Speicher` : gpu ? `Grafikkarte: ${escapeHtml(gpu.name)} (${fmtGB(gpu.vramGB)})` : 'Keine eigene Grafikkarte – KI läuft auf dem Prozessor',
+    `Arbeitsspeicher: ${fmtGB(sp.ramGB)}`,
+    sp.cpu ? `Prozessor: ${escapeHtml(sp.cpu)} (${sp.cores} Kerne)` : '',
+    sp.diskFreeGB != null ? `Frei auf der Festplatte: ${fmtGB(sp.diskFreeGB)}` : '',
+    `Flüssig bis ca. ${fmtGB(b.fast)} Modellgröße`,
+  ].filter(Boolean).join(' · ');
+}
+
+function pullButton(name, has, label = 'Laden') {
+  return has(name) ? `<button class="btn btn-sm" data-use="${escapeHtml(name)}">${icon('check')} Nutzen</button>`
+    : downloads.has(name) ? `<button class="btn btn-sm" disabled>${icon('loader')} Lädt …</button>`
+      : `<button class="btn btn-sm btn-primary" data-pull="${escapeHtml(name)}">${icon('download')} ${label}</button>`;
+}
+
+function forYouHtml(has) {
+  const sp = settings.specs;
+  if (!sp) {
+    return `<div class="empty-state" style="padding:22px 12px">
+      <p style="margin:0 0 6px;color:var(--text)"><b>Welche KI passt zu deinem PC?</b></p>
+      <p style="margin:0 0 14px">Die App liest einmal Arbeitsspeicher, Grafikkarte, Prozessor und freien Speicherplatz aus und schlägt dir die besten Modelle für jeden Bereich vor – Allround, Programmieren, Deutsch und mehr.</p>
+      <button class="btn btn-primary" data-scan>${icon('cpu')} Passende Modelle finden</button></div>`;
+  }
+  const { picks } = recommend(sp);
+  return `<div class="spec-line">${specsSummary(sp)} <button class="link-btn" data-scan>Neu auslesen</button></div>
+    <div class="list">${picks.length ? picks.map((p) => `<div class="list-item">
+      <div class="li-main"><div class="li-title">${p.cat.label} <span class="li-sub" style="font-weight:400">– ${p.cat.desc}</span></div>
+      <div class="li-title" style="font-size:14px;margin-top:2px">${escapeHtml(p.name)} ${capBadges(p.model.caps)}</div>
+      <div class="li-sub">${escapeHtml(p.why)}</div>
+      <div class="li-sub">${escapeHtml(p.model.desc)}</div></div>
+      <div class="li-actions">${pullButton(p.name, has)}</div></div>`).join('')
+      : '<div class="empty-state">Für diesen PC passt leider kein Modell aus der Liste – sieh dir unter „Alle Modelle“ die kleinsten an.</div>'}</div>
+    <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:8px 2px 0">Größen sind ungefähre Werte. Alle Modelle findest du unter „Alle Modelle“.</p>`;
+}
+
+function allModelsHtml(has) {
+  const b = settings.specs ? budget(settings.specs) : null;
+  const fitBadge = (gb) => (!b || gb == null ? '' : gb <= b.fast ? '<span class="badge ok">passt</span>' : gb <= b.ok ? '<span class="badge">langsam</span>' : '<span class="badge danger">zu groß</span>');
+  let list = '';
+  if (catState.source === 'hf') {
+    list = catState.loading ? `<div class="empty-state">${icon('loader')} Lade Hugging Face …</div>`
+      : catState.error ? `<div class="empty-state">${escapeHtml(catState.error)}</div>`
+        : (catState.items || []).map((m) => `<div class="list-item"><div class="li-main">
+          <div class="li-title">${escapeHtml(m.id)}</div>
+          <div class="li-sub">${fmtCount(m.downloads)} Downloads · ${fmtCount(m.likes)} Likes${m.task ? ` · ${escapeHtml(m.task)}` : ''}</div></div>
+          <div class="li-actions">${pullButton(m.name, has)}</div></div>`).join('') || '<div class="empty-state">Nichts gefunden.</div>';
+  } else {
+    // Live-Liste der Ollama-Bibliothek, sonst (offline) der eingebaute Katalog
+    const known = new Map(CATALOG.map((m) => [m.name, m]));
+    const q = catState.q.toLowerCase();
+    const items = catState.items && !catState.error ? catState.items
+      : CATALOG.filter((m) => !q || m.name.includes(q) || m.desc.toLowerCase().includes(q)).map((m) => ({ name: m.name, desc: m.desc, caps: m.caps, sizes: m.tags.map((t) => t[0]) }));
+    list = (catState.loading ? `<div class="empty-state">${icon('loader')} Lade die Ollama-Bibliothek …</div>` : '')
+      + (catState.error ? `<div class="hint" style="font-size:12.5px;color:var(--text-faint);margin:0 2px 8px">${escapeHtml(catState.error)} – zeige die eingebaute Liste.</div>` : '')
+      + (items.map((m) => {
+        const k = known.get(m.name);
+        const gbOf = (tag) => k?.tags.find((t) => t[0] === tag)?.[1];
+        const sizes = m.sizes?.length ? m.sizes : ['latest'];
+        return `<div class="list-item"><div class="li-main">
+          <div class="li-title">${escapeHtml(m.name)} ${capBadges(m.caps)}</div>
+          <div class="li-sub">${escapeHtml(m.desc || k?.desc || '')}${m.pulls ? ` · ${escapeHtml(m.pulls)} Downloads` : ''}${m.updated ? ` · ${escapeHtml(m.updated)}` : ''}</div>
+          <div class="size-row">${sizes.map((t) => {
+            const full = t === 'latest' ? m.name : `${m.name}:${t}`;
+            const gb = gbOf(t);
+            return has(full) ? `<button class="chip-size done" data-use="${escapeHtml(full)}">${escapeHtml(t)} ${icon('check')}</button>`
+              : `<button class="chip-size" data-pull="${escapeHtml(full)}" title="${escapeHtml(full)} herunterladen">${icon('download')} ${escapeHtml(t)}${gb ? ` · ${fmtGB(gb)}` : ''} ${fitBadge(gb)}</button>`;
+          }).join('')}</div></div></div>`;
+      }).join('') || '<div class="empty-state">Nichts gefunden.</div>');
+  }
+  return `<div class="row" style="gap:8px;flex-wrap:wrap">
+      <input class="input grow" id="catSearch" placeholder="Modelle durchsuchen, z. B. qwen, coder, vision …" value="${escapeHtml(catState.q)}">
+      <div class="seg"><button class="${catState.source === 'ollama' ? 'on' : ''}" data-cat-source="ollama">Ollama</button><button class="${catState.source === 'hf' ? 'on' : ''}" data-cat-source="hf">Hugging Face</button></div>
+    </div>
+    <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:6px 2px 10px">${catState.source === 'hf' ? 'GGUF-Modelle von Hugging Face – Ollama lädt sie direkt (empfohlene Variante Q4_K_M).' : 'Klicke auf eine Größe, um sie herunterzuladen. Kleinere Größen sind schneller, größere klüger.'}</p>
+    <div class="list">${list}</div>
+    <div class="row" style="margin-top:12px"><input class="input grow" id="pullName" placeholder="Oder direkt eingeben: z. B. llama3.2:3b oder hf.co/user/modell"><button class="btn" id="pullBtn">${icon('download')} Laden</button></div>`;
+}
+
+function installedHtml(runningNames) {
+  return `<div class="list">${models.length ? models.map((m) => `<div class="list-item">
+        <div class="li-main"><div class="li-title">${escapeHtml(m.name)} ${runningNames.has(m.name) ? '<span class="badge ok">aktiv</span>' : ''} <span class="caps" data-caps="${escapeHtml(m.name)}"></span></div>
+        <div class="li-sub">${[formatBytes(m.size), m.details?.parameter_size, m.details?.quantization_level, m.details?.family].filter(Boolean).join(' · ')}</div></div>
+        <div class="li-actions">
+          ${runningNames.has(m.name)
+            ? `<button class="btn btn-sm" data-unload="${escapeHtml(m.name)}" title="Aus dem Arbeitsspeicher entladen">${icon('stop')} Stoppen</button>`
+            : `<button class="btn btn-sm" data-load="${escapeHtml(m.name)}" title="In den Arbeitsspeicher laden">${icon('play')} Starten</button>`}
+          <button class="btn btn-sm" data-use="${escapeHtml(m.name)}">Nutzen</button>
+          <button class="icon-btn" data-delete-model="${escapeHtml(m.name)}" title="Löschen">${icon('trash')}</button>
+        </div></div>`).join('') : `<div class="empty-state">${online ? 'Noch keine Modelle installiert – sieh unter „Für dich“ nach, welche zu deinem PC passen.' : 'Ollama ist nicht verbunden.'}</div>`}</div>`;
+}
+
+async function loadCatalog() {
+  catState.loading = true;
+  catState.error = '';
+  if ($('#modelsModal')) renderModelsModal();
+  try {
+    const r = catState.source === 'hf' ? await catalog.hf(catState.q) : await catalog.ollama(catState.q);
+    catState.items = r.models || [];
+  } catch (err) {
+    catState.items = null;
+    catState.error = err.message;
+  }
+  catState.loading = false;
+  catState.loaded = true;
+  if ($('#modelsModal')) {
+    const pos = $('#catSearch')?.selectionStart;
+    renderModelsModal();
+    const inp = $('#catSearch');
+    if (inp && document.activeElement !== inp && pos != null) { inp.focus(); inp.setSelectionRange(pos, pos); }
+  }
+}
+
+// Systemdaten nur nach Zustimmung auslesen
+async function scanSystem() {
+  if (!settings.specsConsent) {
+    const ok = await confirmDialog('Um passende Modelle zu finden, liest die App einmal aus:<br>• Arbeitsspeicher<br>• Grafikkarte und Grafikspeicher<br>• Prozessor<br>• freien Speicherplatz<br><br>Die Daten bleiben auf deinem PC und werden nirgendwohin geschickt.', { title: 'Systemdaten auslesen?', ok: 'Erlauben & auslesen' });
+    if (!ok) return;
+    settings.specsConsent = true;
+  }
+  toast('Lese Systemdaten aus …');
+  try {
+    settings.specs = await catalog.specs();
+    saveSettings();
+  } catch (err) {
+    toast(`Systemdaten konnten nicht gelesen werden: ${err.message}`, 'error');
+  }
+  if ($('#modelsModal')) renderModelsModal();
+}
+
+// Vor dem Herunterladen warnen, wenn ein Modell zu groß für den PC ist
+async function askPull(name) {
+  const gb = sizeOf(name);
+  const b = settings.specs ? budget(settings.specs) : null;
+  if (b && gb && gb > b.ok) {
+    const ok = await confirmDialog(`<b>${escapeHtml(name)}</b> braucht ca. ${fmtGB(gb)} – das ist für deinen PC sehr groß und wird wahrscheinlich sehr langsam oder gar nicht laufen. Trotzdem herunterladen?`, { title: 'Modell ist sehr groß', ok: 'Trotzdem laden' });
+    if (!ok) return;
+  }
+  pullModel(name);
+}
+
 function openModels() {
   openModal({ title: 'KI-Modelle', body: '<div id="modelsModal"></div>', onMount: () => renderModelsModal() });
 }
@@ -2459,37 +2601,36 @@ async function renderModelsModal() {
   if (online) running = await ollama.running().catch(() => []);
   const runningNames = new Set(running.map((r) => r.name));
   const installed = new Set(models.map((m) => m.name));
+  const tab = modelsTab;
+  const has = (n) => installed.has(n) || installed.has(`${n}:latest`) || (!n.includes(':') && [...installed].some((x) => x.startsWith(`${n}:`)));
   box.innerHTML = `
     <div class="list-item" style="background:var(--bg-soft)">
       <div class="li-main"><div class="li-title"><span class="state-dot ${online ? 'on' : ''}"></span>${online ? 'Ollama läuft' : 'Ollama ist aus'} ${ollamaVersion && online ? `<span class="badge">v${escapeHtml(ollamaVersion)}</span>` : ''}</div>
       <div class="li-sub">${online ? `${models.length} Modelle installiert · ${running.length} aktiv im Speicher` : 'Starte Ollama, um Modelle zu nutzen'}</div></div>
       <div class="li-actions">${online ? `<button class="btn btn-sm" data-ollama="stop">${icon('power')} Beenden</button>` : `<button class="btn btn-sm btn-primary" data-ollama="start">${icon('power')} Starten</button>`}</div>
     </div>
-    <div>
-      <div class="section-title">Neue KI herunterladen</div>
-      <div class="row"><input class="input grow" id="pullName" placeholder="Modellname, z. B. llama3.2 oder qwen2.5:7b"><button class="btn btn-primary" id="pullBtn">${icon('download')} Laden</button></div>
-      <p class="hint" style="font-size:12.5px;color:var(--text-faint);margin:6px 0 10px">Alle Modelle findest du auf <a href="https://ollama.com/library" target="_blank" rel="noopener">ollama.com/library</a>.</p>
-      <div class="chips">${RECOMMENDED.map((r) => `<button class="chip" data-pull="${r.name}" ${installed.has(r.name) || installed.has(r.name + ':latest') ? 'disabled style="opacity:.5"' : ''}><b>${r.name}</b><small>${r.desc} · ${r.size}</small></button>`).join('')}</div>
+    <div class="mtabs" role="tablist">
+      <button class="${tab === 'foryou' ? 'on' : ''}" data-mtab="foryou">Für dich</button>
+      <button class="${tab === 'all' ? 'on' : ''}" data-mtab="all">Alle Modelle</button>
+      <button class="${tab === 'installed' ? 'on' : ''}" data-mtab="installed">Installiert (${models.length})</button>
     </div>
     <div id="downloadsBox" class="list">${downloadsHtml()}</div>
-    <div>
-      <div class="section-title">Installiert</div>
-      <div class="list">${models.length ? models.map((m) => `<div class="list-item">
-        <div class="li-main"><div class="li-title">${escapeHtml(m.name)} ${runningNames.has(m.name) ? '<span class="badge ok">aktiv</span>' : ''} <span class="caps" data-caps="${escapeHtml(m.name)}"></span></div>
-        <div class="li-sub">${[formatBytes(m.size), m.details?.parameter_size, m.details?.quantization_level, m.details?.family].filter(Boolean).join(' · ')}</div></div>
-        <div class="li-actions">
-          ${runningNames.has(m.name)
-            ? `<button class="btn btn-sm" data-unload="${escapeHtml(m.name)}" title="Aus dem Arbeitsspeicher entladen">${icon('stop')} Stoppen</button>`
-            : `<button class="btn btn-sm" data-load="${escapeHtml(m.name)}" title="In den Arbeitsspeicher laden">${icon('play')} Starten</button>`}
-          <button class="btn btn-sm" data-use="${escapeHtml(m.name)}">Nutzen</button>
-          <button class="icon-btn" data-delete-model="${escapeHtml(m.name)}" title="Löschen">${icon('trash')}</button>
-        </div></div>`).join('') : `<div class="empty-state">${online ? 'Noch keine Modelle installiert.' : 'Ollama ist nicht verbunden.'}</div>`}</div>
-    </div>`;
+    ${tab === 'foryou' ? forYouHtml(has) : tab === 'all' ? allModelsHtml(has) : installedHtml(runningNames)}`;
 
   const pullInput = $('#pullName', box);
-  const doPull = () => { if (pullInput.value.trim()) { pullModel(pullInput.value); pullInput.value = ''; } };
-  $('#pullBtn', box).onclick = doPull;
-  pullInput.onkeydown = (e) => { if (e.key === 'Enter') doPull(); };
+  if (pullInput) {
+    const doPull = () => { if (pullInput.value.trim()) { askPull(pullInput.value.trim()); pullInput.value = ''; } };
+    $('#pullBtn', box).onclick = doPull;
+    pullInput.onkeydown = (e) => { if (e.key === 'Enter') doPull(); };
+  }
+  const search = $('#catSearch', box);
+  if (search) {
+    search.oninput = () => {
+      clearTimeout(catState.timer);
+      catState.timer = setTimeout(() => { catState.q = search.value.trim(); loadCatalog(); }, 450);
+    };
+  }
+  if (tab === 'all' && !catState.loaded && !catState.loading) loadCatalog();
 
   // Fähigkeiten nachladen
   for (const m of models) {
@@ -2505,7 +2646,12 @@ async function renderModelsModal() {
 el.modalRoot.addEventListener('click', async (e) => {
   const t = e.target;
   const pull = t.closest('[data-pull]');
-  if (pull) { pullModel(pull.dataset.pull); return; }
+  if (pull) { askPull(pull.dataset.pull); return; }
+  const mtab = t.closest('[data-mtab]');
+  if (mtab) { modelsTab = mtab.dataset.mtab; renderModelsModal(); return; }
+  if (t.closest('[data-scan]')) { scanSystem(); return; }
+  const src = t.closest('[data-cat-source]');
+  if (src && src.dataset.catSource !== catState.source) { catState.source = src.dataset.catSource; catState.items = null; loadCatalog(); return; }
   const cancel = t.closest('[data-cancel-dl]');
   if (cancel) { downloads.get(cancel.dataset.cancelDl)?.ctrl.abort(); return; }
   const load = t.closest('[data-load]');
